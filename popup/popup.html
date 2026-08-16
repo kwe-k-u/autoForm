@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="app-header">
+    <img src="../icons/icon48.png" alt="" class="logo" />
+    <div>
+      <h1>autoForm</h1>
+      <span class="host" id="pageHost">—</span>
+    </div>
+  </header>
+
+  <section class="card account-card">
+    <div class="account-bar">
+      <span id="accAvatar" class="acc-avatar">L</span>
+      <div class="account-id">
+        <strong id="accName">Local</strong>
+        <span class="hint" id="accDetail">Using autoForm on this device</span>
+      </div>
+      <span id="accBadge" class="badge">Free</span>
+    </div>
+    <div class="row account-actions">
+      <button id="signInBtn" class="btn btn-ghost">Sign in</button>
+      <button id="signOutBtn" class="btn btn-ghost hidden">Sign out</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <label class="field-label" for="profileSelect">Active profile</label>
+    <div class="row">
+      <select id="profileSelect"></select>
+      <button id="newProfileBtn" class="btn btn-ghost" title="Create a new profile">+ New</button>
+    </div>
+    <p class="hint" id="answerCount">0 saved answers</p>
+  </section>
+
+  <section class="card">
+    <label class="field-label" for="connectionSelect">AI connection</label>
+    <div class="row">
+      <select id="connectionSelect"></select>
+      <button id="manageConnBtn" class="btn btn-ghost" title="Manage AI connections">Manage</button>
+    </div>
+    <p class="hint" id="connectionHint"></p>
+  </section>
+
+  <section class="card">
+    <div class="row toggle-row">
+      <div>
+        <strong>Autofill</strong>
+        <p class="hint">Automatically fill matching fields using the active profile.</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="autofillToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row toggle-row">
+      <div>
+        <strong>Auto-save while typing</strong>
+        <p class="hint">Save answers to the active profile as you type.</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="autoSaveToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <button id="autofillNowBtn" class="btn btn-primary">Autofill now</button>
+    <button id="suggestBtn" class="btn">✨ Suggest with AI</button>
+    <button id="captureBtn" class="btn">Save this page's answers</button>
+    <p class="hint status" id="status"></p>
+  </section>
+
+  <footer class="app-footer">
+    <button id="settingsBtn" class="link">Settings</button>
+    <span class="sep">·</span>
+    <span id="pageFrames" class="hint"></span>
+  </footer>
+
+  <script src="../shared/account.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

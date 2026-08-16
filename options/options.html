@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>autoForm Settings</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="../icons/icon48.png" alt="" />
+        <strong>autoForm</strong>
+      </div>
+      <nav id="nav">
+        <button class="nav-btn active" data-view="profiles">Profiles</button>
+        <button class="nav-btn" data-view="answers">Answers</button>
+        <button class="nav-btn" data-view="ai">AI Settings</button>
+        <button class="nav-btn" data-view="data">Data</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <div id="planBanner" class="plan-banner"></div>
+
+      <section id="view-profiles" class="view">
+        <div class="view-head">
+          <h2>Profiles</h2>
+          <button id="addProfileBtn" class="btn btn-primary">+ Add profile</button>
+        </div>
+        <p class="hint">Profiles group your answers by purpose, e.g. "Job Application" or "Small Business".</p>
+        <ul id="profileList" class="profile-list"></ul>
+        <div id="profilesEmpty" class="empty hidden">
+          No profiles yet. Create one to start saving answers.
+        </div>
+      </section>
+
+      <section id="view-answers" class="view hidden">
+        <div class="view-head">
+          <h2>Answers</h2>
+          <div class="spacer"></div>
+          <input type="search" id="answerSearch" class="search" placeholder="Search questions or answers…" />
+        </div>
+        <div class="view-head sub">
+          <label for="answersProfileSelect">Profile:</label>
+          <select id="answersProfileSelect" class="grow"></select>
+          <button id="addAnswerBtn" class="btn btn-ghost">+ Add answer</button>
+        </div>
+        <div class="view-toggle" id="answersViewToggle">
+          <button class="view-toggle-btn active" data-answers-view="all">All questions</button>
+          <button class="view-toggle-btn" data-answers-view="sites">By application</button>
+        </div>
+        <table class="table" id="answersTable">
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Answer</th>
+              <th>Source</th>
+              <th>Seen on</th>
+              <th>Updated</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="answersBody"></tbody>
+        </table>
+        <div id="siteCards"></div>
+        <div id="answersEmpty" class="empty hidden">No answers saved in this profile yet.</div>
+      </section>
+
+      <section id="view-ai" class="view hidden">
+        <div class="view-head">
+          <h2>AI Settings</h2>
+          <div class="spacer"></div>
+          <select id="connectionSelect" class="grow"></select>
+          <button id="newConnBtn" class="btn btn-ghost">+ Add connection</button>
+        </div>
+        <p class="hint">
+          autoForm calls any OpenAI-compatible <code>/chat/completions</code> endpoint. Selecting a
+          provider auto-fills the default URL, model, and settings — you can edit them. Works with
+          OpenAI, OpenRouter, Groq, Google Gemini, Ollama (<code>http://localhost:11434/v1</code>),
+          LM Studio, and more.
+        </p>
+        <form id="aiForm" class="form">
+          <div class="form-row">
+            <label>
+              <span>Name</span>
+              <input type="text" name="name" placeholder="Default" />
+            </label>
+            <label>
+              <span>Provider</span>
+              <select name="provider">
+                <option value="OpenAI">OpenAI</option>
+                <option value="OpenRouter">OpenRouter</option>
+                <option value="Groq">Groq</option>
+                <option value="Google Gemini">Google Gemini</option>
+                <option value="Ollama">Ollama</option>
+                <option value="LM Studio">LM Studio</option>
+                <option value="Custom">Custom</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            <span>Base URL</span>
+            <input type="text" name="baseUrl" placeholder="https://api.openai.com/v1" />
+          </label>
+          <label>
+            <span>API key</span>
+            <input type="password" name="apiKey" placeholder="sk-…" autocomplete="off" />
+          </label>
+          <label>
+            <span>Model</span>
+            <input type="text" name="model" placeholder="gpt-4o-mini" />
+          </label>
+          <div class="form-row">
+            <label>
+              <span>Temperature</span>
+              <input type="number" name="temperature" min="0" max="2" step="0.1" />
+            </label>
+            <label>
+              <span>Max tokens</span>
+              <input type="number" name="maxTokens" min="1" max="4000" step="1" />
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save connection</button>
+            <button type="button" id="testLLMBtn" class="btn">Test connection</button>
+            <button type="button" id="deleteConnBtn" class="btn btn-danger">Delete</button>
+          </div>
+          <p id="aiStatus" class="status"></p>
+        </form>
+      </section>
+
+      <section id="view-data" class="view hidden">
+        <div class="view-head">
+          <h2>Data</h2>
+        </div>
+        <div class="card">
+          <h3>Export</h3>
+          <p class="hint">Download all profiles and settings as a JSON backup.</p>
+          <button id="exportBtn" class="btn">Export JSON</button>
+        </div>
+        <div class="card">
+          <h3>Import</h3>
+          <p class="hint">Restore a previous backup. This replaces all current data.</p>
+          <button id="importBtn" class="btn">Import JSON…</button>
+          <input type="file" id="importFile" accept="application/json" hidden />
+        </div>
+        <div class="card danger">
+          <h3>Reset</h3>
+          <p class="hint">Delete every profile, answer, and setting.</p>
+          <button id="resetBtn" class="btn btn-danger">Reset all data</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="../shared/providers.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

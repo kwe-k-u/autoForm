@@ -1,0 +1,6 @@
+# Firebase credentials (generated from .env — never commit)
+.env
+firebase-config.js
+
+# Node
+node_modules/

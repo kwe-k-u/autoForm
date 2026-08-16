@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>autoForm — Account</title>
+  <link rel="stylesheet" href="account.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="brand">
+      <img src="../icons/icon48.png" alt="" />
+      <div>
+        <h1>autoForm</h1>
+        <p>Sign in to your account, or keep everything on this device.</p>
+      </div>
+    </header>
+
+    <p id="notConfigured" class="notice hidden">
+      Sign-in isn't available yet — Firebase isn't configured. You can still use autoForm locally.
+    </p>
+
+    <section id="signedOut" class="card">
+      <h2>Get started</h2>
+      <p class="hint">Every account starts on the Free plan with unlimited profiles and answers.</p>
+
+      <button id="googleBtn" class="btn btn-provider">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 0 1 0-4.2V7.06H2.18a11 11 0 0 0 0 9.88l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.06l3.66 2.84C6.71 7.3 9.14 5.38 12 5.38z"/></svg>
+        Continue with Google
+      </button>
+
+      <button id="appleBtn" class="btn btn-provider btn-apple">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.36 12.76c.02 2.5 2.19 3.33 2.21 3.34-.02.06-.34 1.18-1.14 2.32-.69.99-1.4 1.97-2.53 1.99-1.1.02-1.46-.65-2.72-.65-1.26 0-1.65.63-2.7.67-1.08.04-1.9-1.07-2.6-2.05-1.41-2.04-2.49-5.77-1.04-8.29.72-1.26 2-2.05 3.4-2.07 1.06-.02 2.06.71 2.71.71.65 0 1.87-.88 3.15-.75.54.02 2.05.22 3.02 1.64-.08.05-1.8 1.05-1.76 3.14zM14.14 4.4c.58-.7.97-1.67.86-2.64-.83.03-1.84.55-2.44 1.25-.53.61-1 1.6-.88 2.54.93.07 1.88-.47 2.46-1.15z" fill="#fff"/></svg>
+        Continue with Apple
+      </button>
+
+      <div class="divider"><span>or</span></div>
+
+      <button id="localBtn" class="btn">Continue locally (no account)</button>
+      <p id="authStatus" class="status"></p>
+    </section>
+
+    <section id="signedIn" class="card hidden">
+      <h2>Signed in</h2>
+      <div class="account-row">
+        <img id="avatar" class="avatar hidden" alt="" />
+        <div class="account-id">
+          <strong id="accName">—</strong>
+          <span class="hint" id="accEmail">—</span>
+        </div>
+        <span id="planBadge" class="badge">Free</span>
+      </div>
+      <p class="hint" id="planDetail"></p>
+      <div class="actions">
+        <button id="signOutBtn" class="btn btn-danger">Sign out</button>
+        <button id="closeBtn" class="btn">Close</button>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <p class="hint">Payments and subscriptions aren't available yet — this account flow is groundwork.</p>
+    </footer>
+  </div>
+
+  <script src="../firebase-config.js"></script>
+  <script src="../lib/firebase-app-compat.js"></script>
+  <script src="../lib/firebase-auth-compat.js"></script>
+  <script src="../shared/account.js"></script>
+  <script src="account.js"></script>
+</body>
+</html>

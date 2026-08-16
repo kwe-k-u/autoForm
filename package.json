@@ -1,0 +1,9 @@
+{
+  "name": "autoform-extension",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build tooling for the autoForm Chrome extension.",
+  "scripts": {
+    "build:config": "node scripts/gen-firebase-config.js"
+  }
+}
