@@ -496,11 +496,90 @@ input:focus {
   transform: rotate(90deg);
 }
 
-.site-table {
-  border-radius: 0;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
+/* Answer card list (flat view) */
+.answers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Answer card */
+.answer-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.answer-card-question {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.answer-card-value {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 2px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.answer-card-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.answer-card-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.answer-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.answer-card-date {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.answer-card-sites {
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(100, 116, 139, 0.12);
+  padding: 1px 7px;
+  border-radius: 10px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Site card expanded answer list */
+.site-card-answers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.site-card-answers .answer-card {
+  border-left: 3px solid var(--primary);
 }
 
 /* Toggle switch */
@@ -649,25 +728,6 @@ input:focus {
     justify-content: flex-end;
   }
 
-  /* Table: horizontal scroll on mobile */
-  .table-wrap {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    margin-bottom: 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
-
-  .table {
-    min-width: 540px;
-  }
-
-  .table th,
-  .table td {
-    padding: 8px 10px;
-    font-size: 12.5px;
-  }
-
   /* Form: stack rows */
   .form {
     padding: 16px;
@@ -718,9 +778,13 @@ input:focus {
     font-size: 14px;
   }
 
-  .cell-key,
-  .cell-value {
-    max-width: 160px;
+  .answer-card {
+    padding: 10px 12px;
+  }
+
+  .answer-card-actions {
+    flex-direction: column;
+    gap: 4px;
   }
 
   .site-card-header {
@@ -771,5 +835,14 @@ input:focus {
   .form-actions .btn {
     width: 100%;
     text-align: center;
+  }
+
+  .answer-card-actions {
+    flex-direction: row;
+    width: 100%;
+  }
+
+  .answer-card-actions .btn {
+    flex: 1;
   }
 }

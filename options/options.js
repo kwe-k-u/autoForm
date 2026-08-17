@@ -316,7 +316,117 @@
   }
 
   /**
-   * Render the answers section: toggles between the flat table view
+   * Build a single answer card element.
+   * @param {Object} a - answer object
+   * @param {Object} [opts] - { compact: bool } for inside site cards
+   */
+  function buildAnswerCard(a, opts) {
+    const card = document.createElement("div");
+    card.className = "answer-card";
+
+    const meta = document.createElement("div");
+    meta.className = "answer-card-meta";
+
+    const date = document.createElement("span");
+    date.className = "answer-card-date";
+    date.textContent = fmtTime(a.updatedAt);
+    meta.appendChild(date);
+
+    const tag = document.createElement("span");
+    tag.className = "source-tag" + (a.source === "llm" ? " llm" : "");
+    tag.textContent = a.source || "learned";
+    meta.appendChild(tag);
+
+    if (!opts?.compact) {
+      const sites = (a.sites || []).join(", ");
+      if (sites) {
+        const sitesTag = document.createElement("span");
+        sitesTag.className = "answer-card-sites";
+        sitesTag.textContent = sites;
+        sitesTag.title = sites;
+        meta.appendChild(sitesTag);
+      }
+    }
+
+    const q = document.createElement("div");
+    q.className = "answer-card-question";
+    q.textContent = questionLabel(a);
+
+    const v = document.createElement("div");
+    v.className = "answer-card-value";
+    v.textContent = a.value;
+
+    const actions = document.createElement("div");
+    actions.className = "answer-card-actions";
+
+    const editBtn = document.createElement("button");
+    editBtn.className = "btn btn-small";
+    editBtn.textContent = "Edit";
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn btn-small btn-danger";
+    delBtn.textContent = "Delete";
+    delBtn.addEventListener("click", async () => {
+      if (!confirm(`Delete answer for "${questionLabel(a)}"?`)) return;
+      await sendMsg({ type: "deleteAnswer", profileId: state.answersProfileId, key: a.key });
+      await refresh();
+    });
+
+    // Inline edit: replaces question/value with input fields
+    editBtn.addEventListener("click", () => {
+      q.textContent = "";
+      v.textContent = "";
+
+      const keyInput = document.createElement("input");
+      keyInput.className = "inline-input";
+      keyInput.value = a.question || a.key;
+
+      const valInput = document.createElement("input");
+      valInput.className = "inline-input";
+      valInput.value = a.value;
+
+      const editRow = document.createElement("div");
+      editRow.className = "answer-card-edit";
+      editRow.append(keyInput, valInput);
+
+      const saveBtn = document.createElement("button");
+      saveBtn.className = "btn btn-small btn-primary";
+      saveBtn.textContent = "Save";
+      saveBtn.addEventListener("click", async () => {
+        const newQuestion = keyInput.value.trim();
+        const newVal = valInput.value.trim();
+        if (!newQuestion || !newVal) return;
+        const res = await sendMsg({
+          type: "saveAnswers",
+          profileId: state.answersProfileId,
+          pairs: [{ key: newQuestion, value: newVal, source: "manual", question: newQuestion }]
+        });
+        if (!res.ok) {
+          alert(res.error);
+          return;
+        }
+        if (newQuestion !== a.key && newQuestion !== (a.question || a.key)) {
+          await sendMsg({ type: "deleteAnswer", profileId: state.answersProfileId, key: a.key });
+        }
+        await refresh();
+      });
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-small";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", renderAnswers);
+
+      actions.textContent = "";
+      actions.append(saveBtn, cancelBtn);
+    });
+
+    actions.append(editBtn, delBtn);
+    card.append(meta, q, v, actions);
+    return card;
+  }
+
+  /**
+   * Render the answers section: toggles between the flat card view
    * and the grouped-by-site card view.
    */
   function renderAnswers() {
@@ -324,21 +434,21 @@
       b.classList.toggle("active", b.dataset.answersView === state.answersView);
     });
     if (state.answersView === "sites") {
-      $("answersTable").classList.add("hidden");
+      $("answersList").classList.add("hidden");
       $("siteCards").classList.remove("hidden");
       $("answersEmpty").classList.add("hidden");
       renderSiteCards();
       return;
     }
-    $("answersTable").classList.remove("hidden");
+    $("answersList").classList.remove("hidden");
     $("siteCards").classList.add("hidden");
-    renderAnswersTable();
+    renderAnswersList();
   }
 
-  /** Render the flat table of all answers (with search filter applied) */
-  function renderAnswersTable() {
-    const tbody = $("answersBody");
-    tbody.innerHTML = "";
+  /** Render the flat list of all answer cards (with search filter applied) */
+  function renderAnswersList() {
+    const list = $("answersList");
+    list.innerHTML = "";
 
     const q = state.search.toLowerCase();
     const filtered = state.answers.filter(
@@ -358,100 +468,7 @@
         : "No answers saved in this profile yet.";
 
     for (const a of filtered) {
-      const tr = document.createElement("tr");
-
-      const keyTd = document.createElement("td");
-      keyTd.className = "cell-key";
-
-      const valTd = document.createElement("td");
-      valTd.className = "cell-value";
-
-      const srcTd = document.createElement("td");
-      const tag = document.createElement("span");
-      tag.className = "source-tag" + (a.source === "llm" ? " llm" : "");
-      tag.textContent = a.source || "learned";
-
-      const seenTd = document.createElement("td");
-      seenTd.className = "cell-key";
-      seenTd.textContent = (a.sites || []).join(", ") || "—";
-      seenTd.title = (a.sites || []).join(", ") || "No source site recorded";
-
-      const timeTd = document.createElement("td");
-      timeTd.textContent = fmtTime(a.updatedAt);
-      timeTd.style.color = "var(--muted)";
-
-      const actTd = document.createElement("td");
-      actTd.className = "row-actions";
-
-      keyTd.textContent = questionLabel(a);
-      valTd.textContent = a.value;
-
-      // Inline edit button
-      const editBtn = document.createElement("button");
-      editBtn.className = "btn btn-small";
-      editBtn.textContent = "Edit";
-
-      const delBtn = document.createElement("button");
-      delBtn.className = "btn btn-small btn-danger";
-      delBtn.textContent = "Delete";
-      delBtn.addEventListener("click", async () => {
-        if (!confirm(`Delete answer for "${questionLabel(a)}"?`)) return;
-        await sendMsg({ type: "deleteAnswer", profileId: state.answersProfileId, key: a.key });
-        await refresh();
-      });
-
-      // Inline edit: replaces cell text with input fields
-      editBtn.addEventListener("click", () => {
-        keyTd.textContent = "";
-        valTd.textContent = "";
-
-        const keyInput = document.createElement("input");
-        keyInput.className = "inline-input";
-        keyInput.value = a.question || a.key;
-
-        const valInput = document.createElement("input");
-        valInput.className = "inline-input";
-        valInput.value = a.value;
-
-        keyTd.appendChild(keyInput);
-        valTd.appendChild(valInput);
-
-        const saveBtn = document.createElement("button");
-        saveBtn.className = "btn btn-small btn-primary";
-        saveBtn.textContent = "Save";
-        saveBtn.addEventListener("click", async () => {
-          const newQuestion = keyInput.value.trim();
-          const newVal = valInput.value.trim();
-          if (!newQuestion || !newVal) return;
-          const res = await sendMsg({
-            type: "saveAnswers",
-            profileId: state.answersProfileId,
-            pairs: [{ key: newQuestion, value: newVal, source: "manual", question: newQuestion }]
-          });
-          if (!res.ok) {
-            alert(res.error);
-            return;
-          }
-          // If the key changed, delete the old answer
-          if (newQuestion !== a.key && newQuestion !== (a.question || a.key)) {
-            await sendMsg({ type: "deleteAnswer", profileId: state.answersProfileId, key: a.key });
-          }
-          await refresh();
-        });
-
-        const cancelBtn = document.createElement("button");
-        cancelBtn.className = "btn btn-small";
-        cancelBtn.textContent = "Cancel";
-        cancelBtn.addEventListener("click", renderAnswers);
-
-        actTd.textContent = "";
-        actTd.append(saveBtn, cancelBtn);
-      });
-
-      actTd.append(editBtn, delBtn);
-      srcTd.appendChild(tag);
-      tr.append(keyTd, valTd, srcTd, seenTd, timeTd, actTd);
-      tbody.appendChild(tr);
+      list.appendChild(buildAnswerCard(a));
     }
   }
 
@@ -531,45 +548,14 @@
 
     card.appendChild(header);
 
-    // Render the nested answer table when expanded
+    // Render the nested answer cards when expanded
     if (state.expandedSites.has(site)) {
-      const table = document.createElement("table");
-      table.className = "table site-table";
-      table.innerHTML =
-        "<thead><tr><th>Question</th><th>Answer</th><th>Source</th><th>Updated</th><th></th></tr></thead>";
-      const tbody = document.createElement("tbody");
+      const list = document.createElement("div");
+      list.className = "site-card-answers";
       for (const a of answers) {
-        const tr = document.createElement("tr");
-        const k = document.createElement("td");
-        k.className = "cell-key";
-        k.textContent = questionLabel(a);
-        const v = document.createElement("td");
-        v.className = "cell-value";
-        v.textContent = a.value;
-        const s = document.createElement("td");
-        const tag = document.createElement("span");
-        tag.className = "source-tag" + (a.source === "llm" ? " llm" : "");
-        tag.textContent = a.source || "learned";
-        s.appendChild(tag);
-        const t = document.createElement("td");
-        t.textContent = fmtTime(a.updatedAt);
-        t.style.color = "var(--muted)";
-        const act = document.createElement("td");
-        act.className = "row-actions";
-        const delRow = document.createElement("button");
-        delRow.className = "btn btn-small btn-danger";
-        delRow.textContent = "Delete";
-        delRow.addEventListener("click", async () => {
-          if (!confirm(`Delete answer for "${questionLabel(a)}"?`)) return;
-          await sendMsg({ type: "deleteAnswer", profileId: state.answersProfileId, key: a.key });
-          await refresh();
-        });
-        act.appendChild(delRow);
-        tr.append(k, v, s, t, act);
-        tbody.appendChild(tr);
+        list.appendChild(buildAnswerCard(a, { compact: true }));
       }
-      table.appendChild(tbody);
-      card.appendChild(table);
+      card.appendChild(list);
     }
 
     return card;
@@ -610,24 +596,23 @@
     }
   }
 
-  /** Add a blank row to the top of the answers table for manual entry */
+  /** Add a blank answer card to the top of the list for manual entry */
   function addAnswerRow() {
     if (!state.answersProfileId) {
       alert("Create a profile first.");
       return;
     }
-    const tbody = $("answersBody");
-    if (tbody.querySelector(".new-answer")) return;
+    const list = $("answersList");
+    if (list.querySelector(".new-answer")) return;
 
-    const tr = document.createElement("tr");
-    tr.className = "new-answer";
+    const card = document.createElement("div");
+    card.className = "answer-card new-answer";
 
-    const keyTd = document.createElement("td");
-    const valTd = document.createElement("td");
-    const srcTd = document.createElement("td");
-    const seenTd = document.createElement("td");
-    const timeTd = document.createElement("td");
-    const actTd = document.createElement("td");
+    const row = document.createElement("div");
+    row.className = "answer-card-row";
+
+    const text = document.createElement("div");
+    text.className = "answer-card-text";
 
     const keyInput = document.createElement("input");
     keyInput.className = "inline-input";
@@ -637,8 +622,14 @@
     valInput.className = "inline-input";
     valInput.placeholder = "answer";
 
-    keyTd.appendChild(keyInput);
-    valTd.appendChild(valInput);
+    const editRow = document.createElement("div");
+    editRow.className = "answer-card-edit";
+    editRow.append(keyInput, valInput);
+
+    text.appendChild(editRow);
+
+    const actions = document.createElement("div");
+    actions.className = "answer-card-actions";
 
     const saveBtn = document.createElement("button");
     saveBtn.className = "btn btn-small btn-primary";
@@ -664,9 +655,10 @@
     cancelBtn.textContent = "Cancel";
     cancelBtn.addEventListener("click", renderAnswers);
 
-    actTd.append(saveBtn, cancelBtn);
-    tr.append(keyTd, valTd, srcTd, seenTd, timeTd, actTd);
-    tbody.insertBefore(tr, tbody.firstChild);
+    actions.append(saveBtn, cancelBtn);
+    row.append(text, actions);
+    card.appendChild(row);
+    list.insertBefore(card, list.firstChild);
   }
 
   // Profile selector in answers view
