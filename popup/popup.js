@@ -234,9 +234,11 @@
     renderConnections(state);
 
     $("autofillToggle").checked = !!state.autofillEnabled;
-    $("autoSaveToggle").checked = state.autoSaveTyping !== false;
     updateAnswerCount(state.profiles, state.activeProfileId);
     loadAccount();
+
+    // Load per-page auto-save state from content script
+    loadPageAutoSaveState();
   }
 
   /* ── Connection selector ── */
@@ -347,16 +349,27 @@
     }
   });
 
-  // Auto-save-while-typing toggle
-  $("autoSaveToggle").addEventListener("change", async (e) => {
-    const res = await sendMsg({ type: "setAutoSaveTyping", enabled: e.target.checked });
+  // Per-page auto-save toggle
+  $("pageAutoSaveToggle").addEventListener("change", async (e) => {
+    const res = await broadcastToTab({ type: "FF_TOGGLE_PAGE_AUTOSAVE", enabled: e.target.checked });
     if (!res.ok) {
       setStatus(res.error, true);
       e.target.checked = !e.target.checked;
     } else {
-      setStatus("");
+      setStatus(e.target.checked ? "Answer saving enabled for this page." : "Answer saving disabled for this page.");
     }
   });
+
+  /** Query the content script for the current per-page auto-save state */
+  async function loadPageAutoSaveState() {
+    const res = await broadcastToTab({ type: "FF_GET_PAGE_AUTOSAVE" });
+    if (res.ok && res.results) {
+      const mainResult = res.results.find((r) => r && r.ok);
+      if (mainResult) {
+        $("pageAutoSaveToggle").checked = !!mainResult.pageAutoSave;
+      }
+    }
+  }
 
   /* ── Page action buttons ── */
 
