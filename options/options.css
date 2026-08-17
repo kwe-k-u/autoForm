@@ -66,6 +66,10 @@ body {
   color: #fff;
   padding: 18px 12px;
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .brand {
@@ -529,6 +533,41 @@ input:focus {
   white-space: pre-wrap;
 }
 
+.answer-card-value-wrap {
+  position: relative;
+}
+
+.answer-card-value-wrap.collapsible:not(.expanded) {
+  max-height: calc(1.4em * 5);
+  overflow: hidden;
+}
+
+.answer-card-value-wrap.collapsible:not(.expanded)::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2.4em;
+  background: linear-gradient(transparent, var(--card));
+  pointer-events: none;
+}
+
+.answer-card-toggle {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+  margin-top: -2px;
+}
+
+.answer-card-toggle.visible {
+  display: inline-block;
+}
+
 .answer-card-edit {
   display: flex;
   flex-direction: column;
@@ -641,6 +680,7 @@ input:focus {
     padding: 0;
     position: sticky;
     top: 0;
+    height: auto;
     z-index: 100;
   }
 

@@ -356,6 +356,18 @@
     v.className = "answer-card-value";
     v.textContent = a.value;
 
+    const vWrap = document.createElement("div");
+    vWrap.className = "answer-card-value-wrap";
+    vWrap.appendChild(v);
+
+    const toggle = document.createElement("button");
+    toggle.className = "answer-card-toggle";
+    toggle.textContent = "Show more";
+    toggle.addEventListener("click", () => {
+      const expanded = vWrap.classList.toggle("expanded");
+      toggle.textContent = expanded ? "Show less" : "Show more";
+    });
+
     const actions = document.createElement("div");
     actions.className = "answer-card-actions";
 
@@ -375,7 +387,8 @@
     // Inline edit: replaces question/value with input fields
     editBtn.addEventListener("click", () => {
       q.textContent = "";
-      v.textContent = "";
+      vWrap.textContent = "";
+      toggle.classList.remove("visible");
 
       const keyInput = document.createElement("input");
       keyInput.className = "inline-input";
@@ -418,10 +431,21 @@
 
       actions.textContent = "";
       actions.append(saveBtn, cancelBtn);
+      vWrap.append(editRow);
     });
 
     actions.append(editBtn, delBtn);
-    card.append(meta, q, v, actions);
+    card.append(meta, q, vWrap, toggle, actions);
+
+    // Auto-collapse long answers after card is in the DOM
+    requestAnimationFrame(() => {
+      const lineHeight = parseFloat(getComputedStyle(v).lineHeight) || 18;
+      if (v.scrollHeight > lineHeight * 5 + 2) {
+        vWrap.classList.add("collapsible");
+        toggle.classList.add("visible");
+      }
+    });
+
     return card;
   }
 
@@ -460,7 +484,7 @@
 
     $("answersEmpty").classList.toggle(
       "hidden",
-      !(state.profiles.length === 0 || filtered.length > 0)
+      state.profiles.length > 0 && filtered.length > 0
     );
     $("answersEmpty").textContent =
       state.profiles.length === 0
