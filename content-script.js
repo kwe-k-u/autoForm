@@ -36,10 +36,14 @@
   );
 
   /* ── Shared mutable state ── */
-  const state = { autofillEnabled: false, autoSaveTyping: true, activeProfileId: null };
+  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, activeProfileId: null };
 
   /** Hostname of the current page, stored with every saved answer */
   const PAGE_SITE = location.hostname || null;
+
+  /** Per-page auto-save toggle (toggled by user or LLM detection) */
+  let pageAutoSave = false;
+  let pageAutoSaveChecked = false;  // Ensures LLM detection runs only once per load
 
   /** Map of key → { key, value, source, question } awaiting flush to background */
   const pending = new Map();
@@ -70,6 +74,7 @@
     if (r.ok) {
       state.autofillEnabled = !!r.data.autofillEnabled;
       state.autoSaveTyping = r.data.autoSaveTyping !== false;
+      state.autoSaveDetection = r.data.autoSaveDetection === true;
       state.activeProfileId = r.data.activeProfileId || null;
     }
   }
@@ -572,7 +577,7 @@
     const el = e.target;
     if (!el || !isEligible(el)) return;
     markTouched(el);
-    if (!state.autoSaveTyping) return;
+    if (!pageAutoSave) return;
     const question = fieldQuestion(el);
     const key = fieldKey(el);
     if (!key) return;
@@ -609,34 +614,41 @@
     const fields = visibleEligibleFields();
     const toMatch = []; // Fields that need LLM matching
 
+    // First pass: count how many fields would be filled (no side effects)
+    const fillPlan = [];
     for (const el of fields) {
-      if (isTouched(el)) continue;           // User already interacted with this field
-      if (hasExistingValue(el)) continue;    // Skip fields that already have content
+      if (isTouched(el)) continue;
+      if (hasExistingValue(el)) continue;
       const labelKey = normalizeKey(getLabel(el));
       const nameKey = normalizeKey(el.getAttribute("name") || el.id);
-
-      // Try heuristic token-match first
       const answer = matchAnswer(profile, labelKey, nameKey);
       if (answer) {
-        window.__FF_AUTOFILLING = true;
-        try {
-          if (applyValue(el, answer.value)) {
-            markTouched(el);
-            lastFillCount++;
-          }
-        } finally {
-          window.__FF_AUTOFILLING = false;
-        }
+        fillPlan.push({ el, answer });
         continue;
       }
-      // Collect unmatched fields for LLM if requested
       if (opts.llm) {
-        toMatch.push({
-          el,
-          labelKey,
-          nameKey,
-          question: fieldQuestion(el)
-        });
+        toMatch.push({ el, labelKey, nameKey, question: fieldQuestion(el) });
+      }
+    }
+
+    if (!fillPlan.length && !toMatch.length) return;
+
+    // Auto-triggered fills require user confirmation
+    if (!opts.manual && fillPlan.length > 0) {
+      const confirmed = await showAutofillConfirmation(fillPlan.length + toMatch.length);
+      if (!confirmed) return;
+    }
+
+    // Apply heuristic matches
+    for (const { el, answer } of fillPlan) {
+      window.__FF_AUTOFILLING = true;
+      try {
+        if (applyValue(el, answer.value)) {
+          markTouched(el);
+          lastFillCount++;
+        }
+      } finally {
+        window.__FF_AUTOFILLING = false;
       }
     }
 
@@ -700,6 +712,96 @@
       .filter(Boolean);
     if (pairs.length) {
       await sendMsg({ type: "saveAnswers", profileId: state.activeProfileId, pairs });
+    }
+  }
+
+  /* ── Autofill confirmation banner ── */
+
+  /**
+   * Show a floating confirmation banner at the top of the page asking
+   * the user to confirm before autofill proceeds. Returns a promise
+   * that resolves to `true` (confirmed) or `false` (dismissed/timeout).
+   */
+  function showAutofillConfirmation(count) {
+    return new Promise((resolve) => {
+      // Remove any existing banner
+      const existing = document.getElementById("__ff_confirm_banner");
+      if (existing) existing.remove();
+
+      const host = (typeof location !== "undefined" && location.hostname) || "this page";
+      const banner = document.createElement("div");
+      banner.id = "__ff_confirm_banner";
+      banner.style.cssText = [
+        "position:fixed","top:0","left:0","right:0","z-index:2147483647",
+        "background:#1e293b","color:#f8fafc","padding:10px 16px",
+        "display:flex","align-items:center","justify-content:center","gap:12px",
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+        "font-size:13px","box-shadow:0 2px 12px rgba(0,0,0,0.25)",
+        "animation:__ff_slideDown 0.2s ease"
+      ].join(";");
+
+      const style = document.createElement("style");
+      style.textContent = "@keyframes __ff_slideDown{from{transform:translateY(-100%)}to{transform:translateY(0)}}";
+      banner.appendChild(style);
+
+      const msg = document.createElement("span");
+      msg.textContent = `autoForm found ${count} matching field${count === 1 ? "" : "s"}. Autofill now?`;
+      banner.appendChild(msg);
+
+      let settled = false;
+      const settle = (result) => {
+        if (settled) return;
+        settled = true;
+        banner.remove();
+        resolve(result);
+      };
+
+      const fillBtn = document.createElement("button");
+      fillBtn.textContent = "\u2713 Fill";
+      fillBtn.style.cssText = "background:#22c55e;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;font-weight:600;";
+      fillBtn.addEventListener("click", () => settle(true));
+
+      const dismissBtn = document.createElement("button");
+      dismissBtn.textContent = "\u2715 Dismiss";
+      dismissBtn.style.cssText = "background:#64748b;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;";
+      dismissBtn.addEventListener("click", () => settle(false));
+
+      banner.appendChild(fillBtn);
+      banner.appendChild(dismissBtn);
+      document.documentElement.appendChild(banner);
+
+      // Auto-dismiss after 30 seconds
+      setTimeout(() => settle(false), 30000);
+    });
+  }
+
+  /* ── LLM form detection (once per page load) ── */
+
+  /**
+   * Ask the LLM whether the current page is a fillable form.
+   * Runs at most once per page load. If the LLM says yes,
+   * pageAutoSave is turned on for this page.
+   */
+  async function runFormDetection() {
+    if (pageAutoSaveChecked) return;
+    pageAutoSaveChecked = true;
+    if (!state.autoSaveDetection) return;
+    // Collect field labels to give the LLM context
+    const fields = visibleEligibleFields();
+    const labels = fields.slice(0, 25).map((el) => fieldQuestion(el) || "").filter(Boolean);
+    if (!labels.length) return; // No fields visible — not a form
+    try {
+      const res = await sendMsg({
+        type: "detectFormPage",
+        url: location.href,
+        title: document.title,
+        fieldLabels: labels
+      });
+      if (res.ok && res.data && res.data.isForm) {
+        pageAutoSave = true;
+      }
+    } catch {
+      // Silently fail — detection is best-effort
     }
   }
 
@@ -816,6 +918,11 @@
             .querySelectorAll("[data-ff-touched]")
             .forEach((el) => delete el.dataset.ffTouched);
           return { ok: true };
+        case "FF_TOGGLE_PAGE_AUTOSAVE":
+          pageAutoSave = !!msg.enabled;
+          return { ok: true, pageAutoSave };
+        case "FF_GET_PAGE_AUTOSAVE":
+          return { ok: true, pageAutoSave };
         default:
           return { ok: false, error: "Unknown FF message: " + msg.type };
       }
@@ -833,13 +940,22 @@
     if (!c) return;
     const prev = c.oldValue || {};
     const next = c.newValue || {};
-    state.autoSaveTyping = next.autoSaveTyping !== false;
+    state.autoSaveDetection = next.autoSaveDetection === true;
     // Re-run autofill when the active profile or toggle changes
     if (
       next.autofillEnabled !== prev.autofillEnabled ||
       next.activeProfileId !== prev.activeProfileId
     ) {
       scheduleAutofill(200);
+    }
+    // Reset detection flag when auto-detection toggle changes so it re-runs
+    if (next.autoSaveDetection !== prev.autoSaveDetection) {
+      pageAutoSaveChecked = false;
+      if (next.autoSaveDetection) {
+        runFormDetection();
+      } else {
+        pageAutoSave = false;
+      }
     }
   });
 
@@ -888,11 +1004,19 @@
 
   /* ── Initial autofill on page load (multiple passes for slow-rendering pages) ── */
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => scheduleAutofill(150));
-  } else {
+  async function initialLoad() {
+    await refreshState();
+    // Run LLM form detection once (if auto-detection is enabled)
+    runFormDetection();
+    // Schedule autofill passes
     scheduleAutofill(150);
+    setTimeout(() => scheduleAutofill(1200), 1200);   // Catch late-rendering SPAs
+    setTimeout(() => scheduleAutofill(3000), 3000);   // Catch very slow loaders
   }
-  setTimeout(() => scheduleAutofill(1200), 1200);   // Catch late-rendering SPAs
-  setTimeout(() => scheduleAutofill(3000), 3000);   // Catch very slow loaders
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initialLoad);
+  } else {
+    initialLoad();
+  }
 })();

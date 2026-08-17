@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>autoForm Settings</title>
   <link rel="stylesheet" href="options.css" />
 </head>
@@ -28,6 +29,18 @@
           <h2>Profiles</h2>
           <button id="addProfileBtn" class="btn btn-primary">+ Add profile</button>
         </div>
+        <div class="card" style="max-width:100%;margin-bottom:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div>
+              <strong>Auto-detect forms</strong>
+              <p class="hint" style="margin-bottom:0;">Use AI to detect application forms and automatically enable answer saving on those pages.</p>
+            </div>
+            <label class="switch-wrap">
+              <input type="checkbox" id="autoDetectToggle" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
         <p class="hint">Profiles group your answers by purpose, e.g. "Job Application" or "Small Business".</p>
         <ul id="profileList" class="profile-list"></ul>
         <div id="profilesEmpty" class="empty hidden">
@@ -50,19 +63,21 @@
           <button class="view-toggle-btn active" data-answers-view="all">All questions</button>
           <button class="view-toggle-btn" data-answers-view="sites">By application</button>
         </div>
-        <table class="table" id="answersTable">
-          <thead>
-            <tr>
-              <th>Question</th>
-              <th>Answer</th>
-              <th>Source</th>
-              <th>Seen on</th>
-              <th>Updated</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="answersBody"></tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="table" id="answersTable">
+            <thead>
+              <tr>
+                <th>Question</th>
+                <th>Answer</th>
+                <th>Source</th>
+                <th>Seen on</th>
+                <th>Updated</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="answersBody"></tbody>
+          </table>
+        </div>
         <div id="siteCards"></div>
         <div id="answersEmpty" class="empty hidden">No answers saved in this profile yet.</div>
       </section>

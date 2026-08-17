@@ -27,7 +27,8 @@
     search: "",                 // Current search filter for answers
     answersView: "all",         // "all" (flat table) or "sites" (grouped cards)
     expandedSites: new Set(),   // Which site cards are expanded in sites view
-    account: null               // Current account data from background
+    account: null,              // Current account data from background
+    autoSaveDetection: false    // Whether LLM auto-detect forms is enabled
   };
 
   const PROVIDERS = (typeof FFProviders !== "undefined" && FFProviders.PRESETS) || {};
@@ -92,6 +93,7 @@
       state.activeProfileId = res.data.activeProfileId;
       state.connections = res.data.connections;
       state.activeConnectionId = res.data.activeConnectionId;
+      state.autoSaveDetection = res.data.autoSaveDetection === true;
       if (!state.editingConnectionId) {
         state.editingConnectionId = state.activeConnectionId || (state.connections[0] && state.connections[0].id);
       }
@@ -276,6 +278,21 @@
     if (res.ok) await refresh();
     else alert(res.error);
   });
+
+  // Auto-detect forms toggle
+  $("autoDetectToggle").addEventListener("change", async (e) => {
+    const res = await sendMsg({ type: "setAutoSaveDetection", enabled: e.target.checked });
+    if (!res.ok) {
+      alert(res.error);
+      e.target.checked = !e.target.checked;
+    } else {
+      state.autoSaveDetection = e.target.checked;
+    }
+  });
+
+  function renderAutoDetectToggle() {
+    $("autoDetectToggle").checked = state.autoSaveDetection;
+  }
 
   /* ── Answers view ── */
 
@@ -877,6 +894,7 @@
     renderPlanBanner();
     await loadState();
     renderProfiles();
+    renderAutoDetectToggle();
     renderAnswersSelect();
     await loadAnswers();
     renderAnswers();

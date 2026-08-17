@@ -92,7 +92,8 @@ function defaultState() {
     profiles: {},              // Map of profileId → profile object
     activeProfileId: null,     // Currently selected profile
     autofillEnabled: true,     // Whether auto-triggered autofill is on
-    autoSaveTyping: true,      // Whether to learn answers while user types
+    autoSaveTyping: false,     // Whether to learn answers while user types (off by default)
+    autoSaveDetection: false,  // Use LLM to auto-detect forms and enable saving per page
     connections: [],           // Array of LLM connection objects
     activeConnectionId: null   // Currently selected LLM connection
   };
@@ -624,6 +625,61 @@ async function testLLMConnection() {
   return { ok: true, reply: text };
 }
 
+/* ── LLM form detection (runs once per hostname per session) ── */
+
+const _formDetectionCache = new Map();
+
+/**
+ * Use the LLM to determine if a page is a fillable form (application,
+ * registration, survey, checkout, etc.). Results are cached per hostname
+ * so the LLM is only called once per site per browser session.
+ */
+async function detectFormPage(url, title, fieldLabels) {
+  let hostname = "";
+  try { hostname = new URL(url).hostname; } catch { hostname = url; }
+  if (_formDetectionCache.has(hostname)) {
+    return { isForm: _formDetectionCache.get(hostname) };
+  }
+  // No LLM connection → skip detection, default to not a form
+  const state = await getState();
+  if (!getActiveConnection(state)) {
+    _formDetectionCache.set(hostname, false);
+    return { isForm: false };
+  }
+
+  const labels = (fieldLabels || []).slice(0, 25).join(", ");
+  const system = [
+    "You are a page classifier. Determine if the given web page is an application form,",
+    "job application, survey, registration form, sign-up form, or checkout page that a",
+    "user would want to auto-fill with personal information.",
+    "Reply with ONLY 'true' or 'false'."
+  ].join("\n");
+
+  const user = [
+    `URL: ${url}`,
+    `Title: ${title}`,
+    `Field labels: ${labels || "(none detected)"}`,
+    "",
+    "Is this a fillable form or application?",
+    "Examples of true: job applications, registration forms, surveys, contact forms, checkout pages.",
+    "Examples of false: blog posts, documentation, dashboards, search results, settings pages, articles.",
+    "Reply with ONLY 'true' or 'false'."
+  ].join("\n");
+
+  try {
+    const reply = await callLLM([
+      { role: "system", content: system },
+      { role: "user", content: user }
+    ]);
+    const isForm = /\btrue\b/i.test(reply) && !/\bfalse\b/i.test(reply);
+    _formDetectionCache.set(hostname, isForm);
+    return { isForm };
+  } catch {
+    _formDetectionCache.set(hostname, false);
+    return { isForm: false };
+  }
+}
+
 /* ── Connection management ── */
 
 /**
@@ -661,6 +717,7 @@ async function handleMessage(msg) {
         activeProfileId: state.activeProfileId,
         autofillEnabled: state.autofillEnabled,
         autoSaveTyping: state.autoSaveTyping !== false,
+        autoSaveDetection: state.autoSaveDetection === true,
         profiles: Object.values(state.profiles).map(profileSummary),
         connections: state.connections.map(connectionSummary),
         activeConnectionId: state.activeConnectionId
@@ -679,6 +736,17 @@ async function handleMessage(msg) {
       state.autoSaveTyping = !!msg.enabled;
       await setState(state);
       return { ok: true };
+    }
+
+    case "setAutoSaveDetection": {
+      const state = await getState();
+      state.autoSaveDetection = !!msg.enabled;
+      await setState(state);
+      return { ok: true };
+    }
+
+    case "detectFormPage": {
+      return detectFormPage(msg.url || "", msg.title || "", msg.fieldLabels || []);
     }
 
     /* ── Profile CRUD ── */
