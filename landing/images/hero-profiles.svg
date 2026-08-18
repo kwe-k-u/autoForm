@@ -1,0 +1,57 @@
+<svg viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true">
+  <defs>
+    <linearGradient id="bgProfiles" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="55%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bgProfiles)"/>
+
+  <g fill="#ffffff" opacity="0.08">
+    <circle cx="1360" cy="140" r="4"/><circle cx="1440" cy="140" r="4"/><circle cx="1520" cy="140" r="4"/>
+    <circle cx="1360" cy="200" r="4"/><circle cx="1440" cy="200" r="4"/><circle cx="1520" cy="200" r="4"/>
+    <circle cx="140" cy="760" r="4"/><circle cx="220" cy="760" r="4"/><circle cx="300" cy="760" r="4"/>
+  </g>
+
+  <!-- fanned profile cards -->
+  <g transform="translate(760,470) rotate(-9)">
+    <rect x="-230" y="-140" width="460" height="280" rx="22" fill="#0b1730" opacity="0.35"/>
+  </g>
+  <g transform="translate(800,460) rotate(4)">
+    <rect x="-230" y="-140" width="460" height="280" rx="22" fill="#ffffff" opacity="0.94"/>
+    <circle cx="-160" cy="-70" r="34" fill="#c7d2fe"/>
+    <rect x="-110" y="-84" width="150" height="14" rx="7" fill="#334155"/>
+    <rect x="-110" y="-60" width="100" height="10" rx="5" fill="#94a3b8"/>
+    <rect x="-190" y="10" width="380" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="-190" y="34" width="320" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="-190" y="58" width="340" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="-190" y="92" width="120" height="26" rx="13" fill="#eef1f8"/>
+  </g>
+  <g transform="translate(840,450) rotate(16)">
+    <rect x="-230" y="-140" width="460" height="280" rx="22" fill="#ffffff"/>
+    <circle cx="-160" cy="-70" r="34" fill="#a5b4fc"/>
+    <rect x="-110" y="-84" width="170" height="14" rx="7" fill="#1e293b"/>
+    <rect x="-110" y="-60" width="120" height="10" rx="5" fill="#94a3b8"/>
+    <rect x="-190" y="10" width="380" height="10" rx="5" fill="#eef1f8"/>
+    <rect x="-190" y="34" width="300" height="10" rx="5" fill="#eef1f8"/>
+    <rect x="-190" y="58" width="340" height="10" rx="5" fill="#eef1f8"/>
+    <rect x="-190" y="92" width="140" height="26" rx="13" fill="#dbe3ff"/>
+    <rect x="-190" y="92" width="140" height="26" rx="13" fill="none" stroke="#4f46e5" stroke-width="1.5"/>
+  </g>
+
+  <!-- floating tag chips -->
+  <g transform="translate(1150,300)">
+    <rect width="150" height="44" rx="22" fill="#0f172a"/>
+    <circle cx="24" cy="22" r="8" fill="#22c55e"/>
+    <rect x="42" y="15" width="90" height="8" rx="4" fill="#94a3b8"/>
+    <rect x="42" y="27" width="60" height="8" rx="4" fill="#475569"/>
+  </g>
+  <g transform="translate(320,560)">
+    <rect width="170" height="44" rx="22" fill="#0f172a"/>
+    <circle cx="24" cy="22" r="8" fill="#4f46e5"/>
+    <rect x="42" y="15" width="100" height="8" rx="4" fill="#94a3b8"/>
+    <rect x="42" y="27" width="70" height="8" rx="4" fill="#475569"/>
+  </g>
+</svg>
