@@ -1,0 +1,62 @@
+<svg viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true">
+  <defs>
+    <linearGradient id="bgTracker" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="55%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bgTracker)"/>
+
+  <g fill="#ffffff" opacity="0.08">
+    <circle cx="150" cy="150" r="4"/><circle cx="230" cy="150" r="4"/><circle cx="310" cy="150" r="4"/>
+    <circle cx="1300" cy="760" r="4"/><circle cx="1380" cy="760" r="4"/><circle cx="1460" cy="760" r="4"/>
+  </g>
+
+  <!-- board backdrop -->
+  <rect x="330" y="170" width="940" height="560" rx="26" fill="#0b1730" opacity="0.35"/>
+
+  <!-- Column: Draft -->
+  <g transform="translate(370,210)">
+    <rect width="270" height="480" rx="18" fill="#ffffff" opacity="0.96"/>
+    <rect x="24" y="24" width="90" height="22" rx="11" fill="#e3e6ee"/>
+    <rect x="24" y="60" width="222" height="120" rx="14" fill="#f6f7fb"/>
+    <rect x="40" y="76" width="150" height="10" rx="5" fill="#c7cddb"/>
+    <rect x="40" y="94" width="120" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="40" y="112" width="80" height="20" rx="10" fill="#e3e6ee"/>
+    <rect x="24" y="196" width="222" height="120" rx="14" fill="#f6f7fb"/>
+    <rect x="40" y="212" width="140" height="10" rx="5" fill="#c7cddb"/>
+    <rect x="40" y="230" width="110" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="40" y="248" width="80" height="20" rx="10" fill="#e3e6ee"/>
+  </g>
+
+  <!-- Column: Submitted -->
+  <g transform="translate(665,210)">
+    <rect width="270" height="480" rx="18" fill="#ffffff" opacity="0.98"/>
+    <rect x="24" y="24" width="120" height="22" rx="11" fill="#dbe3ff"/>
+    <rect x="24" y="60" width="222" height="120" rx="14" fill="#f6f7fb"/>
+    <rect x="40" y="76" width="150" height="10" rx="5" fill="#c7cddb"/>
+    <rect x="40" y="94" width="130" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="40" y="112" width="90" height="20" rx="10" fill="#dbe3ff"/>
+    <rect x="24" y="196" width="222" height="120" rx="14" fill="#f6f7fb"/>
+    <rect x="40" y="212" width="130" height="10" rx="5" fill="#c7cddb"/>
+    <rect x="40" y="230" width="150" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="40" y="248" width="90" height="20" rx="10" fill="#dbe3ff"/>
+    <rect x="24" y="332" width="222" height="120" rx="14" fill="#f6f7fb"/>
+    <rect x="40" y="348" width="120" height="10" rx="5" fill="#c7cddb"/>
+    <rect x="40" y="366" width="140" height="10" rx="5" fill="#e3e6ee"/>
+    <rect x="40" y="384" width="90" height="20" rx="10" fill="#dbe3ff"/>
+  </g>
+
+  <!-- Column: Accepted -->
+  <g transform="translate(960,210)">
+    <rect width="270" height="480" rx="18" fill="#ffffff"/>
+    <rect x="24" y="24" width="110" height="22" rx="11" fill="#bbf7d0"/>
+    <rect x="24" y="60" width="222" height="120" rx="14" fill="#f6f7fb"/>
+    <rect x="40" y="76" width="150" height="10" rx="5" fill="#c7cddb"/>
+    <rect x="40" y="94" width="120" height="10" rx="5" fill="#e3e6ee"/>
+    <circle cx="212" cy="140" r="16" fill="#22c55e"/>
+    <path d="M204 140l6 6 12-13" stroke="#ffffff" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

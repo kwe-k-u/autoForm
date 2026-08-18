@@ -5,7 +5,7 @@
 (function () {
   "use strict";
 
-  // Comes from ../firebase-config.js (generated from .env via scripts/gen-firebase-config.js, gitignored).
+  // Comes from firebase-config.js (generated from .env via scripts/gen-firebase-config.js, committed).
   var DATABASE_URL = (globalThis.FIREBASE_CONFIG && globalThis.FIREBASE_CONFIG.databaseURL) || "";
 
   // Mobile nav toggle
@@ -92,7 +92,7 @@
       }
 
       if (!DATABASE_URL) {
-        console.warn("DATABASE_URL isn't set (../firebase-config.js missing or FIREBASE_DATABASE_URL unset in .env) — signup saved locally only.");
+        console.warn("DATABASE_URL isn't set (firebase-config.js missing or FIREBASE_DATABASE_URL unset in .env) — signup saved locally only.");
         showSuccess();
         return;
       }

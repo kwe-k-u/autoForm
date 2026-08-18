@@ -18,9 +18,9 @@
     return;
   }
 
-  // Comes from ../firebase-config.js (generated from .env via scripts/gen-firebase-config.js, gitignored).
+  // Comes from firebase-config.js (generated from .env via scripts/gen-firebase-config.js, committed).
   if (!globalThis.FIREBASE_CONFIG_AVAILABLE) {
-    console.warn("Firebase Analytics: ../firebase-config.js wasn't loaded. Run `node scripts/gen-firebase-config.js` after setting the FIREBASE_* vars in .env.");
+    console.warn("Firebase Analytics: firebase-config.js wasn't loaded. Run `node scripts/gen-firebase-config.js` after setting the FIREBASE_* vars in .env.");
     return;
   }
 
