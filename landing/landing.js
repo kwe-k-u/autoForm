@@ -5,6 +5,9 @@
 (function () {
   "use strict";
 
+  // Comes from ../firebase-config.js (generated from .env via scripts/gen-firebase-config.js, gitignored).
+  var DATABASE_URL = (globalThis.FIREBASE_CONFIG && globalThis.FIREBASE_CONFIG.databaseURL) || "";
+
   // Mobile nav toggle
   function initMobileNav() {
     var toggle = document.getElementById("nav-toggle");
@@ -39,6 +42,22 @@
     });
   }
 
+  // Hero image carousel
+  function initHeroCarousel() {
+    var carousel = document.getElementById("hero-carousel");
+    if (!carousel) return;
+
+    var slides = carousel.querySelectorAll(".hero-slide");
+    if (slides.length < 2) return;
+
+    var current = 0;
+    setInterval(function () {
+      slides[current].classList.remove("is-active");
+      current = (current + 1) % slides.length;
+      slides[current].classList.add("is-active");
+    }, 5000);
+  }
+
   // Waitlist form submission
   function initWaitlistForm() {
     var form = document.getElementById("waitlist-form");
@@ -56,18 +75,38 @@
 
       var formData = {
         email: document.getElementById("email").value,
-        purpose: document.getElementById("purpose").value,
-        country: document.getElementById("country").value,
+        persona: document.getElementById("persona").value,
+        painPoint: document.getElementById("pain-point").value,
         ageRange: document.getElementById("age-range").value,
         timestamp: new Date().toISOString(),
       };
 
+      // Local backup copy, independent of whether the database write succeeds.
       var waitlist = JSON.parse(localStorage.getItem("autoform-waitlist") || "[]");
       waitlist.push(formData);
       localStorage.setItem("autoform-waitlist", JSON.stringify(waitlist));
 
-      formContainer.style.display = "none";
-      successMessage.classList.add("show");
+      function showSuccess() {
+        formContainer.style.display = "none";
+        successMessage.classList.add("show");
+      }
+
+      if (!DATABASE_URL) {
+        console.warn("DATABASE_URL isn't set (../firebase-config.js missing or FIREBASE_DATABASE_URL unset in .env) — signup saved locally only.");
+        showSuccess();
+        return;
+      }
+
+      // POSTing to <path>.json is the Realtime Database REST API — it appends
+      // a new push-ID'd entry under "waitlist", equivalent to push().
+      fetch(DATABASE_URL + "/waitlist.json", {
+        method: "POST",
+        body: JSON.stringify(formData),
+      })
+        .catch(function (err) {
+          console.error("Failed to send signup to the waitlist database:", err);
+        })
+        .finally(showSuccess);
     });
   }
 
@@ -88,6 +127,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     initMobileNav();
+    initHeroCarousel();
     initFaq();
     initWaitlistForm();
     initSmoothScroll();
