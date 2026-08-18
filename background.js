@@ -21,6 +21,8 @@ const ACCOUNT_KEY = "formautoAccount"; // Signed-in account object
 const _importScripts = typeof importScripts === "function" ? importScripts : () => {};
 _importScripts("shared/account.js");   // FFAccount: plan definitions & helpers
 _importScripts("shared/providers.js"); // FFProviders: LLM provider presets
+_importScripts("shared/matching.js");  // FFMatching: normalizeKey & answer matching
+_importScripts("shared/crypto.js");    // FFCrypto: at-rest encryption for API keys
 try {
   _importScripts("firebase-config.js"); // Optional; sets globalThis.FIREBASE_CONFIG
 } catch (e) {
@@ -80,11 +82,25 @@ function defaultConnection() {
     name: "",
     provider: "Custom",
     baseUrl: "",
-    apiKey: "",
+    apiKeyEnc: null, // { iv, data } — encrypted at rest, see shared/crypto.js
     model: "",
     temperature: 0.3,
     maxTokens: 256
   };
+}
+
+/** Encrypt a plaintext API key for storage, falling back to plaintext if FFCrypto isn't loaded */
+async function encryptApiKey(plainText) {
+  if (typeof FFCrypto === "undefined" || !FFCrypto.encryptApiKey) return plainText || null;
+  return FFCrypto.encryptApiKey(plainText);
+}
+
+/** Decrypt a stored API key blob, falling back to a legacy plaintext field if present */
+async function decryptApiKey(conn) {
+  if (conn.apiKeyEnc && typeof FFCrypto !== "undefined" && FFCrypto.decryptApiKey) {
+    return FFCrypto.decryptApiKey(conn.apiKeyEnc);
+  }
+  return conn.apiKey || "";
 }
 
 function defaultState() {
@@ -103,10 +119,13 @@ function defaultState() {
 
 /**
  * Migrate legacy state shapes to the current format.
- * Handles: `settings` → `connections[]` migration.
+ * Handles: `settings` → `connections[]` migration, and plaintext
+ * `apiKey` → encrypted `apiKeyEnc` for any connection that still has one
+ * (from before at-rest encryption was added, including connections that
+ * just came through the `settings` migration above).
  * Returns true if any migration was applied.
  */
-function applyMigrations(state) {
+async function applyMigrations(state) {
   let changed = false;
 
   // Legacy: single "settings" object → first entry in connections array
@@ -134,6 +153,15 @@ function applyMigrations(state) {
     changed = true;
   }
 
+  // Legacy: plaintext apiKey on a connection → encrypted apiKeyEnc
+  for (const conn of state.connections) {
+    if (conn.apiKey) {
+      conn.apiKeyEnc = await encryptApiKey(conn.apiKey);
+      delete conn.apiKey;
+      changed = true;
+    }
+  }
+
   return changed;
 }
 
@@ -141,19 +169,33 @@ function applyMigrations(state) {
 
 /** Load state from storage, apply migrations, merge with defaults */
 async function getState() {
-  const data = await chrome.storage.local.get(STORAGE_KEY);
+  let data;
+  try {
+    data = await chrome.storage.local.get(STORAGE_KEY);
+  } catch (e) {
+    throw new Error(`Failed to load extension data: ${(e && e.message) || e}`);
+  }
   const state = Object.assign(defaultState(), data[STORAGE_KEY] || {});
-  if (applyMigrations(state)) {
-    await chrome.storage.local.set({ [STORAGE_KEY]: state });
+  if (await applyMigrations(state)) {
+    await persistState(state);
   }
   return state;
+}
+
+/** Write the full state object to chrome.storage.local */
+async function persistState(state) {
+  try {
+    await chrome.storage.local.set({ [STORAGE_KEY]: state });
+  } catch (e) {
+    throw new Error(`Failed to save extension data: ${(e && e.message) || e}`);
+  }
 }
 
 /** Merge a partial patch into the current state and persist */
 async function setState(patch) {
   const state = await getState();
   const next = Object.assign(state, patch);
-  await chrome.storage.local.set({ [STORAGE_KEY]: next });
+  await persistState(next);
   return next;
 }
 
@@ -209,8 +251,9 @@ function getActiveConnection(state) {
 
 /* ── Answer storage ── */
 
-/** Normalise a key the same way the content-script does */
+/** Normalise a key the same way the content-script does (shared/matching.js) */
 function normalizeKey(input) {
+  if (typeof FFMatching !== "undefined" && FFMatching.normalizeKey) return FFMatching.normalizeKey(input);
   return String(input || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
@@ -431,7 +474,8 @@ async function callLLM(messages) {
   if (!conn) {
     throw new Error("No AI connection configured. Add one in Settings.");
   }
-  if (!conn.apiKey && !isLocalProvider(conn.provider)) {
+  const apiKey = await decryptApiKey(conn);
+  if (!apiKey && !isLocalProvider(conn.provider)) {
     throw new Error(`No API key for "${conn.name}". Add it in Settings.`);
   }
   let url = (conn.baseUrl || "").trim().replace(/\/+$/, "");
@@ -440,7 +484,7 @@ async function callLLM(messages) {
 
   const headers = { "Content-Type": "application/json" };
   // Only attach Authorization header when an API key is present
-  if (conn.apiKey) headers.Authorization = `Bearer ${conn.apiKey}`;
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const res = await fetch(url, {
     method: "POST",
@@ -685,10 +729,18 @@ async function detectFormPage(url, title, fieldLabels) {
 /**
  * Merge user input with an existing connection, applying provider preset
  * defaults when the provider changes or fields are left blank.
+ *
+ * `input.apiKey`, if present and non-empty, is encrypted into `apiKeyEnc`.
+ * If `input.apiKey` is omitted (the UI leaves the field blank to mean
+ * "keep the current key"), the existing `apiKeyEnc` is left untouched.
+ * A raw `apiKey` field is never copied onto the merged connection.
  */
-function mergeConnection(base, input) {
+async function mergeConnection(base, input) {
   const preset = PROVIDER_PRESETS[input.provider] || {};
-  const c = Object.assign({}, base, input);
+  const { apiKey, ...rest } = input;
+  const c = Object.assign({}, base, rest);
+  delete c.apiKey;
+  if (apiKey) c.apiKeyEnc = await encryptApiKey(apiKey);
   if (input.provider && input.provider !== base.provider && !input.baseUrl) {
     c.baseUrl = preset.baseUrl || "";
   }
@@ -838,7 +890,10 @@ async function handleMessage(msg) {
       const state = await getState();
       const conn = state.connections.find((c) => c.id === msg.connectionId);
       if (!conn) throw new Error("Connection not found");
-      return { connection: JSON.parse(JSON.stringify(conn)) };
+      // Never send the encrypted key blob (or a decrypted key) back to a UI page —
+      // callers only need to know whether one is set.
+      const { apiKeyEnc, ...safe } = JSON.parse(JSON.stringify(conn));
+      return { connection: { ...safe, hasApiKey: !!apiKeyEnc } };
     }
 
     case "createConnection": {
@@ -852,7 +907,7 @@ async function handleMessage(msg) {
         name: String(msg.name || provider || "New Connection"),
         provider,
         baseUrl: msg.baseUrl ?? preset.baseUrl,
-        apiKey: msg.apiKey ?? "",
+        apiKeyEnc: msg.apiKey ? await encryptApiKey(msg.apiKey) : null,
         model: msg.model ?? preset.model,
         temperature: msg.temperature ?? preset.temperature ?? 0.3,
         maxTokens: msg.maxTokens ?? preset.maxTokens ?? 256
@@ -867,7 +922,7 @@ async function handleMessage(msg) {
       const state = await getState();
       const idx = state.connections.findIndex((c) => c.id === msg.connectionId);
       if (idx === -1) throw new Error("Connection not found");
-      state.connections[idx] = mergeConnection(state.connections[idx], msg.connection || {});
+      state.connections[idx] = await mergeConnection(state.connections[idx], msg.connection || {});
       await setState(state);
       return { ok: true };
     }
@@ -922,3 +977,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     .catch((err) => sendResponse({ ok: false, error: err.message }));
   return true;
 });
+
+/* ── Test hook ──
+ * `module` only exists under Node/Jest, never in the service worker, so this
+ * has no effect on the running extension — it just lets the test suite
+ * reach the otherwise-private functions above. */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    getState,
+    setState,
+    persistState,
+    saveAnswers,
+    deleteAnswer,
+    deleteSiteCollection,
+    applyMigrations,
+    mergeConnection,
+    defaultConnection,
+    defaultState,
+    appendSite,
+    makeId,
+    normalizeKey,
+    handleMessage,
+    encryptApiKey,
+    decryptApiKey
+  };
+}
