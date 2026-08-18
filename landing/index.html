@@ -1,837 +1,315 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoForm - Streamline Your Applications</title>
-    <meta name="description" content="AutoForm helps you craft compelling applications for schools, scholarships, startups, and jobs. AI-powered templates and guidance to maximize your chances.">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --primary: #01a6fd;
-            --primary-dark: #0088d4;
-            --bg-dark: #0a0f1a;
-            --bg-darker: #060a12;
-            --bg-card: #111827;
-            --text-primary: #ffffff;
-            --text-secondary: #9ca3af;
-            --border: #1f2937;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        html {
-            scroll-behavior: smooth;
-        }
-
-        body {
-            font-family: 'DM Sans', sans-serif;
-            background: var(--bg-dark);
-            color: var(--text-primary);
-            overflow-x: hidden;
-            -webkit-font-smoothing: antialiased;
-        }
-
-        /* Navigation */
-        nav {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            z-index: 100;
-            padding: 20px 60px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: rgba(10, 15, 26, 0.8);
-            backdrop-filter: blur(20px);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .logo {
-            font-family: 'DM Serif Display', serif;
-            font-size: 24px;
-            color: var(--text-primary);
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .logo-icon {
-            width: 32px;
-            height: 32px;
-            background: linear-gradient(135deg, var(--primary), #00d4ff);
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .logo-icon svg {
-            width: 18px;
-            height: 18px;
-            fill: white;
-        }
-
-        .nav-cta {
-            padding: 10px 24px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-            transition: all 0.3s ease;
-        }
-
-        .nav-cta:hover {
-            background: var(--primary-dark);
-            transform: translateY(-2px);
-        }
-
-        /* Hero Section */
-        .hero {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            text-align: center;
-            padding: 120px 20px 80px;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .hero-bg {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: 
-                radial-gradient(ellipse at 20% 50%, rgba(1, 166, 253, 0.15) 0%, transparent 50%),
-                radial-gradient(ellipse at 80% 50%, rgba(0, 212, 255, 0.1) 0%, transparent 50%);
-            z-index: -1;
-        }
-
-        .hero-grid {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-image: 
-                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-            background-size: 60px 60px;
-            z-index: -1;
-        }
-
-        .badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 16px;
-            background: rgba(1, 166, 253, 0.1);
-            border: 1px solid rgba(1, 166, 253, 0.3);
-            border-radius: 100px;
-            font-size: 14px;
-            color: var(--primary);
-            margin-bottom: 32px;
-            animation: fadeInUp 0.8s ease;
-        }
-
-        .badge-dot {
-            width: 8px;
-            height: 8px;
-            background: var(--primary);
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        h1 {
-            font-family: 'DM Serif Display', serif;
-            font-size: clamp(48px, 8vw, 96px);
-            line-height: 1.1;
-            margin-bottom: 24px;
-            animation: fadeInUp 0.8s ease 0.1s both;
-        }
-
-        h1 span {
-            background: linear-gradient(135deg, var(--primary), #00d4ff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .hero-subtitle {
-            font-size: clamp(18px, 2vw, 24px);
-            color: var(--text-secondary);
-            max-width: 600px;
-            line-height: 1.6;
-            margin-bottom: 48px;
-            animation: fadeInUp 0.8s ease 0.2s both;
-        }
-
-        .hero-cta {
-            display: flex;
-            gap: 16px;
-            animation: fadeInUp 0.8s ease 0.3s both;
-        }
-
-        .btn-primary {
-            padding: 16px 32px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-decoration: none;
-        }
-
-        .btn-primary:hover {
-            background: var(--primary-dark);
-            transform: translateY(-2px);
-            box-shadow: 0 10px 40px rgba(1, 166, 253, 0.3);
-        }
-
-        .btn-secondary {
-            padding: 16px 32px;
-            background: transparent;
-            color: white;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-decoration: none;
-        }
-
-        .btn-secondary:hover {
-            border-color: var(--primary);
-            color: var(--primary);
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        /* Features Section */
-        .features {
-            padding: 120px 60px;
-            background: var(--bg-darker);
-        }
-
-        .section-header {
-            text-align: center;
-            margin-bottom: 80px;
-        }
-
-        .section-label {
-            font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            color: var(--primary);
-            margin-bottom: 16px;
-        }
-
-        .section-title {
-            font-family: 'DM Serif Display', serif;
-            font-size: clamp(32px, 5vw, 56px);
-            margin-bottom: 16px;
-        }
-
-        .section-subtitle {
-            font-size: 18px;
-            color: var(--text-secondary);
-            max-width: 600px;
-            margin: 0 auto;
-        }
-
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 32px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        .feature-card {
-            padding: 40px;
-            background: var(--bg-card);
-            border-radius: 20px;
-            border: 1px solid var(--border);
-            transition: all 0.3s ease;
-        }
-
-        .feature-card:hover {
-            border-color: var(--primary);
-            transform: translateY(-5px);
-        }
-
-        .feature-icon {
-            width: 56px;
-            height: 56px;
-            background: rgba(1, 166, 253, 0.1);
-            border-radius: 14px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 24px;
-        }
-
-        .feature-icon svg {
-            width: 28px;
-            height: 28px;
-            stroke: var(--primary);
-        }
-
-        .feature-title {
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 12px;
-        }
-
-        .feature-desc {
-            color: var(--text-secondary);
-            line-height: 1.6;
-        }
-
-        /* Waitlist Section */
-        .waitlist {
-            padding: 120px 60px;
-            position: relative;
-        }
-
-        .waitlist-container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: linear-gradient(135deg, rgba(1, 166, 253, 0.1), rgba(0, 212, 255, 0.05));
-            border: 1px solid rgba(1, 166, 253, 0.2);
-            border-radius: 24px;
-            padding: 60px;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .waitlist-container::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, rgba(1, 166, 253, 0.1) 0%, transparent 70%);
-            animation: rotate 20s linear infinite;
-        }
-
-        @keyframes rotate {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
-
-        .waitlist-content {
-            position: relative;
-            z-index: 1;
-        }
-
-        .waitlist-title {
-            font-family: 'DM Serif Display', serif;
-            font-size: 40px;
-            margin-bottom: 16px;
-            text-align: center;
-        }
-
-        .waitlist-subtitle {
-            color: var(--text-secondary);
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        .waitlist-form {
-            display: grid;
-            gap: 20px;
-        }
-
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .form-group label {
-            font-size: 14px;
-            font-weight: 500;
-            color: var(--text-secondary);
-        }
-
-        .form-group input,
-        .form-group select {
-            padding: 14px 16px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            color: white;
-            font-size: 16px;
-            font-family: 'DM Sans', sans-serif;
-            transition: all 0.3s ease;
-        }
-
-        .form-group input:focus,
-        .form-group select:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(1, 166, 253, 0.1);
-        }
-
-        .form-group input::placeholder {
-            color: #4b5563;
-        }
-
-        .form-group select {
-            cursor: pointer;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 12px center;
-            background-size: 18px;
-        }
-
-        .form-group select option {
-            background: var(--bg-card);
-            color: white;
-        }
-
-        .submit-btn {
-            padding: 16px 32px;
-            background: linear-gradient(135deg, var(--primary), #00d4ff);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            margin-top: 10px;
-        }
-
-        .submit-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 40px rgba(1, 166, 253, 0.4);
-        }
-
-        .submit-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .form-note {
-            text-align: center;
-            font-size: 13px;
-            color: var(--text-secondary);
-            margin-top: 16px;
-        }
-
-        .success-message {
-            display: none;
-            text-align: center;
-            padding: 40px;
-        }
-
-        .success-message.show {
-            display: block;
-        }
-
-        .success-icon {
-            width: 80px;
-            height: 80px;
-            background: rgba(34, 197, 94, 0.1);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 24px;
-        }
-
-        .success-icon svg {
-            width: 40px;
-            height: 40px;
-            stroke: #22c55e;
-        }
-
-        .success-title {
-            font-family: 'DM Serif Display', serif;
-            font-size: 32px;
-            margin-bottom: 12px;
-        }
-
-        .success-text {
-            color: var(--text-secondary);
-        }
-
-        /* Stats Section */
-        .stats {
-            padding: 80px 60px;
-            background: var(--bg-darker);
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 40px;
-            max-width: 1000px;
-            margin: 0 auto;
-            text-align: center;
-        }
-
-        .stat-item h3 {
-            font-family: 'DM Serif Display', serif;
-            font-size: 48px;
-            color: var(--primary);
-            margin-bottom: 8px;
-        }
-
-        .stat-item p {
-            color: var(--text-secondary);
-            font-size: 14px;
-        }
-
-        /* Footer */
-        footer {
-            padding: 60px;
-            border-top: 1px solid var(--border);
-            text-align: center;
-        }
-
-        .footer-content {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        .footer-logo {
-            font-family: 'DM Serif Display', serif;
-            font-size: 24px;
-            margin-bottom: 16px;
-        }
-
-        .footer-text {
-            color: var(--text-secondary);
-            font-size: 14px;
-        }
-
-        /* Mobile Responsive */
-        @media (max-width: 768px) {
-            nav {
-                padding: 16px 24px;
-            }
-
-            .hero {
-                padding: 100px 20px 60px;
-            }
-
-            .hero-cta {
-                flex-direction: column;
-                width: 100%;
-                max-width: 300px;
-            }
-
-            .btn-primary, .btn-secondary {
-                width: 100%;
-                text-align: center;
-            }
-
-            .features {
-                padding: 80px 24px;
-            }
-
-            .waitlist {
-                padding: 80px 24px;
-            }
-
-            .waitlist-container {
-                padding: 40px 24px;
-            }
-
-            .form-row {
-                grid-template-columns: 1fr;
-            }
-
-            .stats {
-                padding: 60px 24px;
-            }
-
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-                gap: 32px;
-            }
-
-            footer {
-                padding: 40px 24px;
-            }
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoForm - Streamline Your Applications</title>
+  <meta name="description"
+    content="AutoForm helps you craft compelling applications for schools, scholarships, startups, and jobs. AI-powered templates and guidance to maximize your chances.">
+  <link href="../icons/icon48.png" rel="icon" type="image/png">
+  <link rel="apple-touch-icon" href="../icons/icon128.png">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="AutoForm - Streamline Your Applications">
+  <meta property="og:description" content="AutoForm helps you craft compelling applications for schools, scholarships, startups, and jobs. AI-powered guidance to maximize your chances.">
+  <meta property="og:image" content="../icons/icon128.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="AutoForm - Streamline Your Applications">
+  <meta name="twitter:description" content="AutoForm helps you craft compelling applications for schools, scholarships, startups, and jobs. AI-powered guidance to maximize your chances.">
+  <meta name="twitter:image" content="../icons/icon128.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="landing.css">
+  <script src="landing.js" defer></script>
 </head>
+
 <body>
-    <nav>
-        <a href="#" class="logo">
-            <div class="logo-icon">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M9 12L11 14L15 10M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+
+  <header class="nav" id="site-nav">
+    <div class="nav-inner">
+      <a href="#hero" class="logo">
+        <img class="logo-mark" src="../icons/icon48.png" alt="" width="30" height="30">
+        AutoForm
+      </a>
+      <nav class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#investors">Success</a>
+        <a href="#faq">FAQ</a>
+        <a href="#waitlist">Contact</a>
+      </nav>
+      <div class="nav-actions">
+        <a href="#waitlist" class="btn btn-outline btn-sm">Join Waitlist</a>
+        <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <section class="hero" id="hero">
+    <video class="hero-video" src="https://framerusercontent.com/assets/M5qoDfjbFEZKbz21sqiEE8bto.mp4" loop autoplay muted playsinline></video>
+    <div class="hero-overlay"></div>
+    <div class="hero-content">
+      <h1>Applications Made Simple</h1>
+      <p class="hero-subtitle">Craft compelling applications for schools, scholarships, startups, and jobs. AI-powered guidance to maximize your chances of success.</p>
+      <a href="#waitlist" class="btn btn-primary">Join the Waitlist</a>
+    </div>
+  </section>
+
+  <section class="stats" id="stats">
+    <div class="stats-grid">
+      <div class="stat-item">
+        <h3>10k+</h3>
+        <p>Applications Planned</p>
+      </div>
+      <div class="stat-item">
+        <h3>85%</h3>
+        <p>Success Rate Target</p>
+      </div>
+      <div class="stat-item">
+        <h3>50+</h3>
+        <p>Countries Supported</p>
+      </div>
+      <div class="stat-item">
+        <h3>24/7</h3>
+        <p>AI Assistance</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <div class="section-header center container">
+      <p class="eyebrow">Features</p>
+      <h2 class="section-title">Everything You Need</h2>
+      <p class="section-subtitle">Powerful tools to help you create standout applications</p>
+    </div>
+    <div class="features-grid">
+      <article class="feature-card">
+        <h3>Smart Templates</h3>
+        <p>AI-generated templates tailored to your specific application type, whether it's university admissions or job applications.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Guided Writing</h3>
+        <p>Step-by-step assistance through every section of your application with real-time feedback and suggestions.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Success Analytics</h3>
+        <p>Track your application progress and get insights on how to improve your chances of acceptance.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Global Reach</h3>
+        <p>Support for applications across 50+ countries with region-specific requirements and best practices.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Fast Tracking</h3>
+        <p>Complete your applications in record time with automated form filling and intelligent suggestions.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Secure &amp; Private</h3>
+        <p>Your data is encrypted and protected. We never share your information with third parties.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="investors" id="investors">
+    <div class="investors-inner">
+      <div class="investors-header on-dark">
+        <h2 class="section-title">Success Analytics</h2>
+        <p class="section-subtitle">Track your application progress and get insights on how to improve your chances of acceptance.</p>
+        <div class="investors-stats">
+          <div class="stat-item">
+            <h3>10k+</h3>
+            <p>Applications Planned</p>
+          </div>
+          <div class="stat-item">
+            <h3>85%</h3>
+            <p>Success Rate Target</p>
+          </div>
+          <div class="stat-item">
+            <h3>50+</h3>
+            <p>Countries Supported</p>
+          </div>
+        </div>
+      </div>
+      <div class="investors-media">
+        <img src="https://framerusercontent.com/images/i4Lg0gzr9pEsZ1KuVmy1HTiJDyA.jpg?width=1200&amp;height=800" alt="AutoForm Pitch Event" loading="lazy" width="1200" height="800">
+      </div>
+    </div>
+  </section>
+
+  <section class="testimonials" id="testimonials">
+    <div class="section-header container">
+      <h2 class="section-title">Testimonials</h2>
+    </div>
+    <div class="testimonial-videos">
+      <a class="testimonial-video" href="https://youtu.be/4ei6kQ1IAnQ" target="_blank" rel="noopener">
+        <figure>
+          <img src="https://i.ytimg.com/vi_webp/nSGQp8gwbvo/hqdefault.webp" alt="AutoForm User Story - 2026 thumbnail" loading="lazy">
+          <span class="play-btn" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </span>
+        </figure>
+        <figcaption>AutoForm User Story - 2026</figcaption>
+      </a>
+      <a class="testimonial-video" href="https://youtu.be/4ei6kQ1IAnQ" target="_blank" rel="noopener">
+        <figure>
+          <img src="https://i.ytimg.com/vi_webp/kEmQpBU00RQ/hqdefault.webp" alt="AutoForm User Story - 2025 thumbnail" loading="lazy">
+          <span class="play-btn" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </span>
+        </figure>
+        <figcaption>AutoForm User Story - 2025</figcaption>
+      </a>
+      <a class="testimonial-video" href="https://youtu.be/4ei6kQ1IAnQ" target="_blank" rel="noopener">
+        <figure>
+          <img src="https://i.ytimg.com/vi_webp/4ei6kQ1IAnQ/hqdefault.webp" alt="AutoForm User Story - 2025 thumbnail" loading="lazy">
+          <span class="play-btn" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </span>
+        </figure>
+        <figcaption>AutoForm User Story - 2025</figcaption>
+      </a>
+    </div>
+    <div class="testimonial-quotes">
+      <blockquote class="quote-card">
+        <p class="quote-mark">&ldquo;</p>
+        <p>AutoForm helped me craft a compelling application that stood out. The AI-powered guidance made the entire process seamless and significantly improved my chances of success.</p>
+        <cite>— AutoForm User</cite>
+      </blockquote>
+      <blockquote class="quote-card">
+        <p class="quote-mark">&ldquo;</p>
+        <p>AutoForm's AI templates and guided writing assistance transformed my application process. I went from struggling with essays to submitting polished, compelling applications in record time.</p>
+        <cite>— AutoForm User</cite>
+      </blockquote>
+    </div>
+  </section>
+
+  <section class="faq" id="faq">
+    <div class="section-header center container">
+      <h2 class="section-title">FAQs</h2>
+    </div>
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>What types of applications can I use AutoForm for?<span class="faq-icon"></span></summary>
+        <p>AutoForm supports applications for schools, scholarships, startups, and jobs. Our AI-powered tools adapt to your specific needs across 50+ countries.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Is AutoForm free to use?<span class="faq-icon"></span></summary>
+        <p>AutoForm offers early access pricing. Sign up for our waitlist to be notified when we launch and get exclusive early access benefits.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How is AutoForm different from other application tools?<span class="faq-icon"></span></summary>
+        <p>AutoForm combines AI-powered templates, guided writing assistance, and success analytics into one seamless platform. We support applications across schools, scholarships, startups, and jobs.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How does the AI guidance work?<span class="faq-icon"></span></summary>
+        <p>Our AI analyzes your application type and provides real-time feedback, suggestions, and tailored templates to help you craft compelling applications that maximize your chances of success.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="waitlist" id="waitlist">
+    <div class="waitlist-container">
+      <div class="waitlist-content">
+        <div id="form-container">
+          <h2 class="waitlist-title">Join the Waitlist</h2>
+          <p class="waitlist-subtitle">Be among the first to experience AutoForm. Limited spots available.</p>
+          <form class="waitlist-form" id="waitlist-form">
+            <div class="form-group">
+              <label for="email">Email Address</label>
+              <input type="email" id="email" name="email" placeholder="you@example.com" required>
             </div>
-            AutoForm
+            <div class="form-row">
+              <div class="form-group">
+                <label for="purpose">Primary Purpose</label>
+                <select id="purpose" name="purpose" required>
+                  <option value="" disabled selected>Select your purpose</option>
+                  <option value="school">School Application</option>
+                  <option value="scholarship">Scholarship</option>
+                  <option value="startup">Startup Programs</option>
+                  <option value="job">Job Application</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="country">Country</label>
+                <select id="country" name="country" required>
+                  <option value="" disabled selected>Select your country</option>
+                  <option value="US">United States</option>
+                  <option value="UK">United Kingdom</option>
+                  <option value="CA">Canada</option>
+                  <option value="AU">Australia</option>
+                  <option value="DE">Germany</option>
+                  <option value="FR">France</option>
+                  <option value="NG">Nigeria</option>
+                  <option value="GH">Ghana</option>
+                  <option value="KE">Kenya</option>
+                  <option value="ZA">South Africa</option>
+                  <option value="IN">India</option>
+                  <option value="BR">Brazil</option>
+                  <option value="JP">Japan</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="age-range">Age Range</label>
+              <select id="age-range" name="age-range" required>
+                <option value="" disabled selected>Select your age range</option>
+                <option value="under-18">Under 18</option>
+                <option value="18-24">18 - 24</option>
+                <option value="25-34">25 - 34</option>
+                <option value="35-44">35 - 44</option>
+                <option value="45+">45+</option>
+              </select>
+            </div>
+            <button type="submit" class="btn btn-primary" id="submit-btn">Reserve My Spot</button>
+            <p class="form-note">No spam, ever. We'll only notify you when we launch.</p>
+          </form>
+        </div>
+        <div class="success-message" id="success-message">
+          <div class="success-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M5 13l4 4L19 7"/>
+            </svg>
+          </div>
+          <h3 class="success-title">You're on the list!</h3>
+          <p class="success-text">We'll notify you as soon as AutoForm is ready. Get excited!</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="site-footer" id="newsletter">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <a href="#hero" class="logo">
+          <img class="logo-mark" src="../icons/icon48.png" alt="" width="30" height="30">
+          AutoForm
         </a>
-        <a href="#waitlist" class="nav-cta">Join Waitlist</a>
-    </nav>
+        <p>AI-powered guidance to help you craft compelling applications for schools, scholarships, startups, and jobs.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Navigation</h4>
+        <ul>
+          <li><a href="#hero">Home</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="#waitlist">Contact</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Contact</h4>
+        <ul>
+          <li><a href="mailto:support@autoform.com">support@autoform.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <p class="footer-bottom">&copy; 2026 AutoForm. All rights reserved.</p>
+  </footer>
 
-    <section class="hero">
-        <div class="hero-bg"></div>
-        <div class="hero-grid"></div>
-        <div class="badge">
-            <span class="badge-dot"></span>
-            Now in Early Access
-        </div>
-        <h1>Applications<br><span>Made Simple</span></h1>
-        <p class="hero-subtitle">Craft compelling applications for schools, scholarships, startups, and jobs. AI-powered guidance to maximize your chances of success.</p>
-        <div class="hero-cta">
-            <a href="#waitlist" class="btn-primary">Join the Waitlist</a>
-            <a href="#features" class="btn-secondary">Learn More</a>
-        </div>
-    </section>
-
-    <section class="stats">
-        <div class="stats-grid">
-            <div class="stat-item">
-                <h3>10k+</h3>
-                <p>Applications Planned</p>
-            </div>
-            <div class="stat-item">
-                <h3>85%</h3>
-                <p>Success Rate Target</p>
-            </div>
-            <div class="stat-item">
-                <h3>50+</h3>
-                <p>Countries Supported</p>
-            </div>
-            <div class="stat-item">
-                <h3>24/7</h3>
-                <p>AI Assistance</p>
-            </div>
-        </div>
-    </section>
-
-    <section class="features" id="features">
-        <div class="section-header">
-            <p class="section-label">Features</p>
-            <h2 class="section-title">Everything You Need</h2>
-            <p class="section-subtitle">Powerful tools to help you create standout applications</p>
-        </div>
-        <div class="features-grid">
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M9 12L11 14L15 10M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z"/>
-                    </svg>
-                </div>
-                <h3 class="feature-title">Smart Templates</h3>
-                <p class="feature-desc">AI-generated templates tailored to your specific application type, whether it's university admissions or job applications.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
-                    </svg>
-                </div>
-                <h3 class="feature-title">Guided Writing</h3>
-                <p class="feature-desc">Step-by-step assistance through every section of your application with real-time feedback and suggestions.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                    </svg>
-                </div>
-                <h3 class="feature-title">Success Analytics</h3>
-                <p class="feature-desc">Track your application progress and get insights on how to improve your chances of acceptance.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                </div>
-                <h3 class="feature-title">Global Reach</h3>
-                <p class="feature-desc">Support for applications across 50+ countries with region-specific requirements and best practices.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                    </svg>
-                </div>
-                <h3 class="feature-title">Fast Tracking</h3>
-                <p class="feature-desc">Complete your applications in record time with automated form filling and intelligent suggestions.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-                    </svg>
-                </div>
-                <h3 class="feature-title">Secure & Private</h3>
-                <p class="feature-desc">Your data is encrypted and protected. We never share your information with third parties.</p>
-            </div>
-        </div>
-    </section>
-
-    <section class="waitlist" id="waitlist">
-        <div class="waitlist-container">
-            <div class="waitlist-content">
-                <div id="form-container">
-                    <h2 class="waitlist-title">Join the Waitlist</h2>
-                    <p class="waitlist-subtitle">Be among the first to experience AutoForm. Limited spots available.</p>
-                    <form class="waitlist-form" id="waitlist-form">
-                        <div class="form-group">
-                            <label for="email">Email Address</label>
-                            <input type="email" id="email" name="email" placeholder="you@example.com" required>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="purpose">Primary Purpose</label>
-                                <select id="purpose" name="purpose" required>
-                                    <option value="" disabled selected>Select your purpose</option>
-                                    <option value="school">School Application</option>
-                                    <option value="scholarship">Scholarship</option>
-                                    <option value="startup">Startup Programs</option>
-                                    <option value="job">Job Application</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="country">Country</label>
-                                <select id="country" name="country" required>
-                                    <option value="" disabled selected>Select your country</option>
-                                    <option value="US">United States</option>
-                                    <option value="UK">United Kingdom</option>
-                                    <option value="CA">Canada</option>
-                                    <option value="AU">Australia</option>
-                                    <option value="DE">Germany</option>
-                                    <option value="FR">France</option>
-                                    <option value="NG">Nigeria</option>
-                                    <option value="GH">Ghana</option>
-                                    <option value="KE">Kenya</option>
-                                    <option value="ZA">South Africa</option>
-                                    <option value="IN">India</option>
-                                    <option value="BR">Brazil</option>
-                                    <option value="JP">Japan</option>
-                                    <option value="OTHER">Other</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label for="age-range">Age Range</label>
-                            <select id="age-range" name="age-range" required>
-                                <option value="" disabled selected>Select your age range</option>
-                                <option value="under-18">Under 18</option>
-                                <option value="18-24">18 - 24</option>
-                                <option value="25-34">25 - 34</option>
-                                <option value="35-44">35 - 44</option>
-                                <option value="45+">45+</option>
-                            </select>
-                        </div>
-                        <button type="submit" class="submit-btn" id="submit-btn">Reserve My Spot</button>
-                        <p class="form-note">No spam, ever. We'll only notify you when we launch.</p>
-                    </form>
-                </div>
-                <div class="success-message" id="success-message">
-                    <div class="success-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M5 13l4 4L19 7"/>
-                        </svg>
-                    </div>
-                    <h3 class="success-title">You're on the list!</h3>
-                    <p class="success-text">We'll notify you as soon as AutoForm is ready. Get excited!</p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <footer>
-        <div class="footer-content">
-            <div class="footer-logo">AutoForm</div>
-            <p class="footer-text">&copy; 2026 AutoForm. All rights reserved.</p>
-        </div>
-    </footer>
-
-    <script>
-        const form = document.getElementById('waitlist-form');
-        const submitBtn = document.getElementById('submit-btn');
-        const formContainer = document.getElementById('form-container');
-        const successMessage = document.getElementById('success-message');
-
-        form.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Submitting...';
-
-            const formData = {
-                email: document.getElementById('email').value,
-                purpose: document.getElementById('purpose').value,
-                country: document.getElementById('country').value,
-                ageRange: document.getElementById('age-range').value,
-                timestamp: new Date().toISOString()
-            };
-
-            // Store in localStorage for now (replace with actual API call)
-            const waitlist = JSON.parse(localStorage.getItem('autoform-waitlist') || '[]');
-            waitlist.push(formData);
-            localStorage.setItem('autoform-waitlist', JSON.stringify(waitlist));
-
-            // Show success message
-            formContainer.style.display = 'none';
-            successMessage.classList.add('show');
-        });
-
-        // Smooth scroll for anchor links
-        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-            anchor.addEventListener('click', function (e) {
-                e.preventDefault();
-                document.querySelector(this.getAttribute('href')).scrollIntoView({
-                    behavior: 'smooth'
-                });
-            });
-        });
-    </script>
 </body>
 </html>
