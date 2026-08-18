@@ -76,38 +76,6 @@ Built with plain JavaScript (no frameworks, no build step). MV3 compliant.
 
 ---
 
-## Roadmap
-
-### High Priority
-- [ ] **Cloud sync** — sync profiles and answers across devices via Firebase/Firestore
-- [ ] **MV3 offscreen document for SSO** — fix Firebase `auth/internal-error` caused by service worker popup restrictions
-- [ ] **Keyboard shortcut** — `Ctrl+Shift+F` to trigger autofill without opening the popup
-- [ ] **Per-site autofill rules** — auto-enable/disable autofill for specific domains
-
-### Medium Priority
-- [ ] **Import from Chrome Autofill** — pull saved addresses/names from Chrome's built-in autofill
-- [ ] **Resume parsing** — upload a PDF/docx resume and extract answers automatically
-- [ ] **Custom field aliases** — let users define synonym mappings (e.g. "Given Name" = "First Name" = "Forename")
-- [ ] **Answer confidence scores** — show how confident the match is before filling
-- [ ] **Batch fill mode** — fill an entire form at once with a visual preview before committing
-
-### Nice to Have
-- [ ] **Cover letter generator** — use saved profile + job description to draft a cover letter via LLM
-- [ ] **Job description parser** — extract skills, requirements, and company info from a job posting
-- [ ] **Answer history / versioning** — view and restore previous versions of an answer
-- [ ] **Statistics dashboard** — how many forms filled, time saved, most-used answers
-- [ ] **Google Sheets integration** — connect a Google Sheet and automatically log application statistics (company, role, date applied, status, form URL) with real-time sync
-- [ ] **Dark mode** — toggle for the popup and settings pages
-- [ ] **Firefox support** — port to Firefox (MV3 compatible)
-- [ ] **Safari support** — port to Safari Web Extension
-
-### Future Ideas
-- [ ] **Form template library** — recognise common ATS forms (Greenhouse, Lever, Workday) and optimise fill order
-- [ ] **Auto-submit** — optionally submit forms after filling (with user confirmation)
-- [ ] **Screenshot capture** — save a screenshot of the filled form for record-keeping
-
----
-
 ## Getting Started
 
 ### Prerequisites
@@ -162,7 +130,9 @@ autoform/
 ├── firebase-config.js     # Auto-generated Firebase config (gitignored)
 ├── shared/
 │   ├── account.js         # Plan tiers and account helpers
-│   └── providers.js       # LLM provider presets (single source of truth)
+│   ├── providers.js       # LLM provider presets (single source of truth)
+│   ├── matching.js        # Text normalisation & answer matching (shared by background.js and content-script.js)
+│   └── crypto.js          # At-rest encryption for connection API keys
 ├── popup/
 │   ├── popup.html         # Toolbar popup UI
 │   └── popup.js           # Popup controller
@@ -178,9 +148,10 @@ autoform/
 ├── scripts/
 │   └── gen-firebase-config.js   # Generates firebase-config.js from .env
 ├── icons/                 # Extension icons
+├── tests/                 # Jest unit tests for the shared/ and background.js logic
 ├── .env.example           # Firebase credential template
 ├── LICENSE                # CC BY-NC 4.0
-└── package.json           # Build scripts only
+└── package.json           # Build scripts and test runner
 ```
 
 ---
@@ -191,6 +162,25 @@ autoform/
 - **Chrome Extensions MV3** — service worker, content scripts, chrome.storage
 - **Firebase Auth** (optional) — Google/Apple sign-in via vendored compat SDK
 - **OpenAI-compatible chat completions API** — works with any provider
+
+---
+
+## Testing
+
+Unit tests cover the pure logic that's safest to regress silently: answer
+matching (`shared/matching.js`), plan/account helpers (`shared/account.js`),
+provider presets (`shared/providers.js`), API-key encryption
+(`shared/crypto.js`), and the storage/migration logic in `background.js`
+(answer saving, plan limits, state migrations).
+
+```bash
+npm install
+npm test
+```
+
+DOM-driven code (content-script.js's field scanning, and the popup/options/
+account page controllers) isn't covered by automated tests — verify those
+manually by loading the unpacked extension in Chrome.
 
 ---
 

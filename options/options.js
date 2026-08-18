@@ -760,11 +760,14 @@
     f.name.value = c.name || "";
     f.provider.value = c.provider || "Custom";
     f.baseUrl.value = c.baseUrl || "";
-    f.apiKey.value = c.apiKey || "";
+    // The API key is never sent back from background.js — only whether one
+    // is set. Leave the field blank; submitting blank keeps the saved key.
+    f.apiKey.value = "";
     f.model.value = c.model || "";
     f.temperature.value = c.temperature;
     f.maxTokens.value = c.maxTokens;
     syncProviderUI();
+    if (c.hasApiKey) f.apiKey.placeholder = "•••••••• (saved — leave blank to keep)";
     setStatus($("aiStatus"), "");
   }
 
@@ -812,18 +815,21 @@
       return;
     }
     const f = e.target;
+    const connection = {
+      name: f.name.value,
+      provider: f.provider.value,
+      baseUrl: f.baseUrl.value,
+      model: f.model.value,
+      temperature: Number(f.temperature.value),
+      maxTokens: Number(f.maxTokens.value)
+    };
+    // Blank API key field means "keep the current key" — only send it when
+    // the user actually typed a new one.
+    if (f.apiKey.value) connection.apiKey = f.apiKey.value;
     const res = await sendMsg({
       type: "updateConnection",
       connectionId: state.editingConnectionId,
-      connection: {
-        name: f.name.value,
-        provider: f.provider.value,
-        baseUrl: f.baseUrl.value,
-        apiKey: f.apiKey.value,
-        model: f.model.value,
-        temperature: Number(f.temperature.value),
-        maxTokens: Number(f.maxTokens.value)
-      }
+      connection
     });
     setStatus($("aiStatus"), res.ok ? "Connection saved." : res.error, res.ok ? "ok" : "error");
     if (res.ok) await refreshAI();
@@ -863,16 +869,20 @@
 
   /** Export all profile/answer data as a downloadable JSON file */
   async function exportData() {
-    const all = await chrome.storage.local.get("formauto");
-    const blob = new Blob([JSON.stringify(all.formauto || {}, null, 2)], {
-      type: "application/json"
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `formauto-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    try {
+      const all = await chrome.storage.local.get("formauto");
+      const blob = new Blob([JSON.stringify(all.formauto || {}, null, 2)], {
+        type: "application/json"
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `formauto-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (err) {
+      alert("Export failed: " + ((err && err.message) || err));
+    }
   }
 
   $("exportBtn").addEventListener("click", exportData);
@@ -899,8 +909,12 @@
   // Reset: wipe everything
   $("resetBtn").addEventListener("click", async () => {
     if (!confirm("Delete ALL profiles, answers, and settings? This cannot be undone.")) return;
-    await chrome.storage.local.remove("formauto");
-    await refresh();
+    try {
+      await chrome.storage.local.remove("formauto");
+      await refresh();
+    } catch (err) {
+      alert("Reset failed: " + ((err && err.message) || err));
+    }
   });
 
   /* ── Full refresh (reloads all views) ── */

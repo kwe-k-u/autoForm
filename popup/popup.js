@@ -39,8 +39,12 @@
 
   /** Get the currently active tab in the current window */
   async function getActiveTab() {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    return tabs[0] || null;
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tabs[0] || null;
+    } catch {
+      return null;
+    }
   }
 
   /** Get all frame IDs for a tab (main frame + any iframes) */
@@ -196,49 +200,53 @@
   /* ── Initial load ── */
 
   async function load() {
-    currentTab = await getActiveTab();
-    if (currentTab?.url) {
-      try {
-        $("pageHost").textContent = new URL(currentTab.url).hostname;
-      } catch {
-        $("pageHost").textContent = "—";
+    try {
+      currentTab = await getActiveTab();
+      if (currentTab?.url) {
+        try {
+          $("pageHost").textContent = new URL(currentTab.url).hostname;
+        } catch {
+          $("pageHost").textContent = "—";
+        }
       }
+
+      const res = await sendMsg({ type: "getState" });
+      if (!res.ok) {
+        setStatus(res.error, true);
+        return;
+      }
+      const state = res.data;
+
+      // Populate profile selector
+      const select = $("profileSelect");
+      select.innerHTML = "";
+      for (const p of state.profiles) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name;
+        select.appendChild(opt);
+      }
+      if (state.profiles.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "No profiles yet";
+        opt.disabled = true;
+        select.appendChild(opt);
+      } else {
+        select.value = state.activeProfileId || state.profiles[0].id;
+      }
+
+      renderConnections(state);
+
+      $("autofillToggle").checked = !!state.autofillEnabled;
+      updateAnswerCount(state.profiles, state.activeProfileId);
+      loadAccount();
+
+      // Load per-page auto-save state from content script
+      loadPageAutoSaveState();
+    } catch (err) {
+      setStatus((err && err.message) || "Failed to load popup state.", true);
     }
-
-    const res = await sendMsg({ type: "getState" });
-    if (!res.ok) {
-      setStatus(res.error, true);
-      return;
-    }
-    const state = res.data;
-
-    // Populate profile selector
-    const select = $("profileSelect");
-    select.innerHTML = "";
-    for (const p of state.profiles) {
-      const opt = document.createElement("option");
-      opt.value = p.id;
-      opt.textContent = p.name;
-      select.appendChild(opt);
-    }
-    if (state.profiles.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "No profiles yet";
-      opt.disabled = true;
-      select.appendChild(opt);
-    } else {
-      select.value = state.activeProfileId || state.profiles[0].id;
-    }
-
-    renderConnections(state);
-
-    $("autofillToggle").checked = !!state.autofillEnabled;
-    updateAnswerCount(state.profiles, state.activeProfileId);
-    loadAccount();
-
-    // Load per-page auto-save state from content script
-    loadPageAutoSaveState();
   }
 
   /* ── Connection selector ── */

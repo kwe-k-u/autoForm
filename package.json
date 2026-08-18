@@ -4,6 +4,11 @@
   "private": true,
   "description": "Build tooling for the autoForm Chrome extension.",
   "scripts": {
-    "build:config": "node scripts/gen-firebase-config.js"
+    "build:config": "node scripts/gen-firebase-config.js",
+    "test": "jest",
+    "test:watch": "jest --watch"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }

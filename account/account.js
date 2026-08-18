@@ -176,9 +176,13 @@
 
     // "Use locally" — creates a local (non-signed-in) account object
     $("localBtn").addEventListener("click", async () => {
-      await saveAccount(FFAccount.localAccount());
-      render(FFAccount.localAccount());
-      setStatus("Using autoForm locally on this device.");
+      try {
+        await saveAccount(FFAccount.localAccount());
+        render(FFAccount.localAccount());
+        setStatus("Using autoForm locally on this device.");
+      } catch (err) {
+        setStatus((err && err.message) || "Failed to switch to local mode.", true);
+      }
     });
 
     // Sign out — clears Firebase session and stored account
@@ -192,9 +196,13 @@
           /* ignore sign-out errors */
         }
       }
-      await removeAccount();
-      render(FFAccount.localAccount());
-      setStatus("Signed out. Data stays on this device.");
+      try {
+        await removeAccount();
+        render(FFAccount.localAccount());
+        setStatus("Signed out. Data stays on this device.");
+      } catch (err) {
+        setStatus((err && err.message) || "Failed to sign out.", true);
+      }
     });
 
     $("closeBtn").addEventListener("click", () => window.close());
@@ -203,7 +211,12 @@
   /* ── Bootstrap ── */
   (async () => {
     setup();
-    const data = await chrome.storage.local.get(ACCOUNT_KEY);
-    render(data[ACCOUNT_KEY] || FFAccount.localAccount());
+    try {
+      const data = await chrome.storage.local.get(ACCOUNT_KEY);
+      render(data[ACCOUNT_KEY] || FFAccount.localAccount());
+    } catch (err) {
+      render(FFAccount.localAccount());
+      setStatus((err && err.message) || "Failed to load account state.", true);
+    }
   })();
 })();
