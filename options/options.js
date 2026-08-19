@@ -511,6 +511,16 @@
   }
 
   /**
+   * Display label for a group of answers: prefers the application's own
+   * name (captured from the page when the answer was saved) and only
+   * falls back to the raw site/URL when no name is available.
+   */
+  function groupDisplayName(site, answers) {
+    const named = answers.find((a) => a.appName);
+    return named ? named.appName : siteLabel(site);
+  }
+
+  /**
    * Build a collapsible site card for the grouped view.
    * Header shows site name + answer count; clicking expands to show the
    * answer table. Each card has a "Delete collection" button.
@@ -530,7 +540,9 @@
     title.className = "site-card-title";
     const name = document.createElement("span");
     name.className = "site-card-name";
-    name.textContent = siteLabel(site);
+    const displayName = groupDisplayName(site, answers);
+    name.textContent = displayName;
+    if (displayName !== siteLabel(site)) name.title = siteLabel(site);
     const count = document.createElement("span");
     count.className = "badge-muted";
     count.textContent = `${answers.length} answer${answers.length === 1 ? "" : "s"}`;
@@ -543,7 +555,7 @@
     delBtn.textContent = "Delete collection";
     delBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const label = siteLabel(site);
+      const label = groupDisplayName(site, answers);
       if (
         !confirm(`Delete all ${answers.length} answers from "${label}"? This cannot be undone.`)
       ) return;
