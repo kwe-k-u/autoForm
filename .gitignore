@@ -1,6 +1,7 @@
 # Firebase credentials (generated from .env — never commit)
 .env
 /firebase-config.js
+test-forms/*
 
 # Node
 node_modules/

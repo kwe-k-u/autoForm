@@ -272,7 +272,7 @@
     $("connectionHint").textContent =
       state.connections.length === 0
         ? "Add one in Settings to use AI suggestions."
-        : "Used by the ✨ Suggest button.";
+        : "Used by the Suggest button.";
   }
 
   /* ── Answer count display ── */

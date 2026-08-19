@@ -38,7 +38,7 @@
   ]);
 
   /* ── Shared mutable state ── */
-  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, activeProfileId: null };
+  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, formDetectionMode: "manual", activeProfileId: null };
 
   /** Hostname of the current page, stored with every saved answer */
   const PAGE_SITE = location.hostname || null;
@@ -77,6 +77,7 @@
       state.autofillEnabled = !!r.data.autofillEnabled;
       state.autoSaveTyping = r.data.autoSaveTyping !== false;
       state.autoSaveDetection = r.data.autoSaveDetection === true;
+      state.formDetectionMode = r.data.formDetectionMode === "auto" ? "auto" : "manual";
       state.activeProfileId = r.data.activeProfileId || null;
     }
   }
@@ -637,20 +638,22 @@
     }
   }
 
-  /* ── Autofill confirmation banner ── */
+  /* ── Confirmation banners ── */
+
+  /** Serializes banner prompts so two triggered in the same page load queue instead of clobbering each other's DOM node */
+  let bannerChain = Promise.resolve();
 
   /**
-   * Show a floating confirmation banner at the top of the page asking
-   * the user to confirm before autofill proceeds. Returns a promise
-   * that resolves to `true` (confirmed) or `false` (dismissed/timeout).
+   * Show a floating confirmation banner at the top of the page with a
+   * confirm/dismiss button pair. Returns a promise that resolves to
+   * `true` (confirmed) or `false` (dismissed/timeout).
    */
-  function showAutofillConfirmation(count) {
-    return new Promise((resolve) => {
+  function showConfirmationBanner({ message, confirmLabel, dismissLabel }) {
+    const run = () => new Promise((resolve) => {
       // Remove any existing banner
       const existing = document.getElementById("__ff_confirm_banner");
       if (existing) existing.remove();
 
-      const host = (typeof location !== "undefined" && location.hostname) || "this page";
       const banner = document.createElement("div");
       banner.id = "__ff_confirm_banner";
       banner.style.cssText = [
@@ -667,7 +670,7 @@
       banner.appendChild(style);
 
       const msg = document.createElement("span");
-      msg.textContent = `autoForm found ${count} matching field${count === 1 ? "" : "s"}. Autofill now?`;
+      msg.textContent = message;
       banner.appendChild(msg);
 
       let settled = false;
@@ -678,31 +681,53 @@
         resolve(result);
       };
 
-      const fillBtn = document.createElement("button");
-      fillBtn.textContent = "\u2713 Fill";
-      fillBtn.style.cssText = "background:#22c55e;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;font-weight:600;";
-      fillBtn.addEventListener("click", () => settle(true));
+      const confirmBtn = document.createElement("button");
+      confirmBtn.textContent = confirmLabel;
+      confirmBtn.style.cssText = "background:#22c55e;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;font-weight:600;";
+      confirmBtn.addEventListener("click", () => settle(true));
 
       const dismissBtn = document.createElement("button");
-      dismissBtn.textContent = "\u2715 Dismiss";
+      dismissBtn.textContent = dismissLabel;
       dismissBtn.style.cssText = "background:#64748b;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;";
       dismissBtn.addEventListener("click", () => settle(false));
 
-      banner.appendChild(fillBtn);
+      banner.appendChild(confirmBtn);
       banner.appendChild(dismissBtn);
       document.documentElement.appendChild(banner);
 
       // Auto-dismiss after 30 seconds
       setTimeout(() => settle(false), 30000);
     });
+    const next = bannerChain.then(run, run);
+    bannerChain = next.catch(() => {});
+    return next;
+  }
+
+  /** Ask the user to confirm before autofill proceeds. */
+  function showAutofillConfirmation(count) {
+    return showConfirmationBanner({
+      message: `autoForm found ${count} matching field${count === 1 ? "" : "s"}. Autofill now?`,
+      confirmLabel: "\u2713 Fill",
+      dismissLabel: "\u2715 Dismiss"
+    });
+  }
+
+  /** Ask the user to confirm before saving answers on a detected relevant form. */
+  function showSaveConfirmation() {
+    return showConfirmationBanner({
+      message: "autoForm detected a form relevant to your profile. Start saving your answers?",
+      confirmLabel: "\u2713 Save",
+      dismissLabel: "\u2715 Not now"
+    });
   }
 
   /* ── LLM form detection (once per page load) ── */
 
   /**
-   * Ask the LLM whether the current page is a fillable form.
-   * Runs at most once per page load. If the LLM says yes,
-   * pageAutoSave is turned on for this page.
+   * Determine whether the current page is a fillable form relevant to any
+   * saved profile. Runs at most once per page load. If both isForm and
+   * relevant come back true, either enables saving immediately (auto mode)
+   * or prompts the user first (manual mode, the default).
    */
   async function runFormDetection() {
     if (pageAutoSaveChecked) return;
@@ -719,8 +744,12 @@
         title: document.title,
         fieldLabels: labels
       });
-      if (res.ok && res.data && res.data.isForm) {
+      if (!res.ok || !res.data || !res.data.isForm || !res.data.relevant) return;
+      if (state.formDetectionMode === "auto") {
         pageAutoSave = true;
+      } else {
+        const accepted = await showSaveConfirmation();
+        if (accepted) pageAutoSave = true;
       }
     } catch {
       // Silently fail — detection is best-effort
@@ -863,6 +892,7 @@
     const prev = c.oldValue || {};
     const next = c.newValue || {};
     state.autoSaveDetection = next.autoSaveDetection === true;
+    state.formDetectionMode = next.formDetectionMode === "auto" ? "auto" : "manual";
     // Re-run autofill when the active profile or toggle changes
     if (
       next.autofillEnabled !== prev.autofillEnabled ||

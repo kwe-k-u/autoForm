@@ -18,7 +18,7 @@ const STORAGE_KEY = "formauto";       // Main state bucket (profiles, connection
 const ACCOUNT_KEY = "formautoAccount"; // Signed-in account object
 
 /* ── Shared modules (loaded via importScripts in service worker context) ── */
-const _importScripts = typeof importScripts === "function" ? importScripts : () => {};
+const _importScripts = typeof importScripts === "function" ? importScripts : () => { };
 _importScripts("shared/account.js");   // FFAccount: plan definitions & helpers
 _importScripts("shared/providers.js"); // FFProviders: LLM provider presets
 _importScripts("shared/matching.js");  // FFMatching: normalizeKey & answer matching
@@ -110,6 +110,7 @@ function defaultState() {
     autofillEnabled: true,     // Whether auto-triggered autofill is on
     autoSaveTyping: false,     // Whether to learn answers while user types (off by default)
     autoSaveDetection: false,  // Use LLM to auto-detect forms and enable saving per page
+    formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
     connections: [],           // Array of LLM connection objects
     activeConnectionId: null   // Currently selected LLM connection
   };
@@ -431,11 +432,12 @@ async function getProfile(id) {
  */
 function buildSystemPrompt(profile) {
   const lines = Object.entries(profile.answers || {})
-    .map(([k, a]) => `- ${k}: ${JSON.stringify(String(a.value))}`)
+    .map(([k, a]) => `- ${normalizeKey(k)}: ${JSON.stringify(String(a.value))}`)
     .slice(0, 60);
   return [
-    "You are an assistant that helps a user fill out web application forms.",
-    "The user has a saved profile with answers they have used before. Use these as context.",
+    "You are an application assistant that helps users fill out forms quickly",
+    "You will be provided with a list of questions and corresponding answers that the user has previously filled on other applications",
+    "If you don't have enough information for a field do not provide an answer, especially for questions where the answer requires fact. Eg: Age, Date of birth, GPA, Salary expectations",
     "Profile answers:",
     lines.length ? lines.join("\n") : "(none yet)"
   ].join("\n");
@@ -455,7 +457,7 @@ function buildAnswerPrompt(question, fieldType, options) {
     "Instructions:",
     "1. If the profile answers contain a matching answer, return exactly that value.",
     "2. If an allowed list is given, pick the best single option value and return it verbatim.",
-    "3. Otherwise return a concise, realistic placeholder for this field, e.g. \"[Your email address]\" if you genuinely cannot infer a value.",
+    "3. Do not provide an answer if you genuinely cannot infer a value.",
     "4. Reply with ONLY the value. No quotes, no explanations, no markdown, no JSON."
   );
   return parts.join("\n");
@@ -673,22 +675,75 @@ async function testLLMConnection() {
 
 const _formDetectionCache = new Map();
 
+/** Minimum number of fields that must map to a profile's saved answers */
+const RELEVANCE_MIN_MATCHES = 2;
+/** Minimum fraction of collected fields that must map to a profile's saved answers */
+const RELEVANCE_MIN_RATIO = 0.25;
+
+/**
+ * Score how well a single profile's saved answers explain a page's field
+ * labels, using the same Dice-token matching FFMatching.matchAnswer uses
+ * for individual fields (shared/matching.js). A profile with no saved
+ * answers can never match.
+ */
+function scoreProfileRelevance(profile, fieldLabels) {
+  const answers = (profile && profile.answers) || {};
+  const keys = Object.keys(answers);
+  if (!keys.length || !fieldLabels.length) return { score: 0, matches: 0 };
+  const keyTokenSets = keys.map((k) => FFMatching.tokenSet(k));
+  let matches = 0;
+  for (const label of fieldLabels) {
+    const labelToks = FFMatching.tokenSet(label);
+    if (!labelToks.size) continue;
+    let best = 0;
+    for (const kt of keyTokenSets) {
+      if (!kt.size) continue;
+      const s = FFMatching.diceScore(kt, labelToks);
+      if (s > best) best = s;
+    }
+    if (best >= 0.5) matches++;
+  }
+  return { score: matches / fieldLabels.length, matches };
+}
+
+/**
+ * Determine whether a page's field labels are relevant to ANY of the
+ * user's profiles (cheap local heuristic — no LLM call). Returns the
+ * single best-matching profile, if any clears both thresholds.
+ */
+function checkFormRelevance(fieldLabels, profiles) {
+  let best = { profileId: null, score: 0, matches: 0 };
+  for (const profile of profiles) {
+    const r = scoreProfileRelevance(profile, fieldLabels);
+    if (r.matches > best.matches || (r.matches === best.matches && r.score > best.score)) {
+      best = { profileId: profile.id, score: r.score, matches: r.matches };
+    }
+  }
+  const relevant = best.matches >= RELEVANCE_MIN_MATCHES && best.score >= RELEVANCE_MIN_RATIO;
+  return { relevant, matchedProfileId: relevant ? best.profileId : null };
+}
+
 /**
  * Use the LLM to determine if a page is a fillable form (application,
- * registration, survey, checkout, etc.). Results are cached per hostname
- * so the LLM is only called once per site per browser session.
+ * registration, survey, checkout, etc.), and separately (via a local
+ * heuristic, not the LLM) whether it's relevant to any saved profile.
+ * The "isForm" result is cached per hostname so the LLM is only called
+ * once per site per browser session; relevance is always recomputed since
+ * saved profile answers can change between calls.
  */
 async function detectFormPage(url, title, fieldLabels) {
   let hostname = "";
   try { hostname = new URL(url).hostname; } catch { hostname = url; }
+  const state = await getState();
+  const relevance = checkFormRelevance(fieldLabels || [], Object.values(state.profiles));
+
   if (_formDetectionCache.has(hostname)) {
-    return { isForm: _formDetectionCache.get(hostname) };
+    return { isForm: _formDetectionCache.get(hostname), ...relevance };
   }
   // No LLM connection → skip detection, default to not a form
-  const state = await getState();
   if (!getActiveConnection(state)) {
     _formDetectionCache.set(hostname, false);
-    return { isForm: false };
+    return { isForm: false, ...relevance };
   }
 
   const labels = (fieldLabels || []).slice(0, 25).join(", ");
@@ -717,10 +772,10 @@ async function detectFormPage(url, title, fieldLabels) {
     ]);
     const isForm = /\btrue\b/i.test(reply) && !/\bfalse\b/i.test(reply);
     _formDetectionCache.set(hostname, isForm);
-    return { isForm };
+    return { isForm, ...relevance };
   } catch {
     _formDetectionCache.set(hostname, false);
-    return { isForm: false };
+    return { isForm: false, ...relevance };
   }
 }
 
@@ -770,6 +825,7 @@ async function handleMessage(msg) {
         autofillEnabled: state.autofillEnabled,
         autoSaveTyping: state.autoSaveTyping !== false,
         autoSaveDetection: state.autoSaveDetection === true,
+        formDetectionMode: state.formDetectionMode === "auto" ? "auto" : "manual",
         profiles: Object.values(state.profiles).map(profileSummary),
         connections: state.connections.map(connectionSummary),
         activeConnectionId: state.activeConnectionId
@@ -793,6 +849,13 @@ async function handleMessage(msg) {
     case "setAutoSaveDetection": {
       const state = await getState();
       state.autoSaveDetection = !!msg.enabled;
+      await setState(state);
+      return { ok: true };
+    }
+
+    case "setFormDetectionMode": {
+      const state = await getState();
+      state.formDetectionMode = msg.mode === "auto" ? "auto" : "manual";
       await setState(state);
       return { ok: true };
     }
@@ -999,6 +1062,8 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeKey,
     handleMessage,
     encryptApiKey,
-    decryptApiKey
+    decryptApiKey,
+    scoreProfileRelevance,
+    checkFormRelevance
   };
 }
