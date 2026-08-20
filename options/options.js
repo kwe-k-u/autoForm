@@ -28,7 +28,8 @@
     answersView: "all",         // "all" (flat table) or "sites" (grouped cards)
     expandedSites: new Set(),   // Which site cards are expanded in sites view
     account: null,              // Current account data from background
-    autoSaveDetection: false    // Whether LLM auto-detect forms is enabled
+    autoSaveDetection: false,   // Whether LLM auto-detect forms is enabled
+    formDetectionMode: "manual" // "manual" (confirm before saving) or "auto" (save immediately)
   };
 
   const PROVIDERS = (typeof FFProviders !== "undefined" && FFProviders.PRESETS) || {};
@@ -94,6 +95,7 @@
       state.connections = res.data.connections;
       state.activeConnectionId = res.data.activeConnectionId;
       state.autoSaveDetection = res.data.autoSaveDetection === true;
+      state.formDetectionMode = res.data.formDetectionMode === "auto" ? "auto" : "manual";
       // if (!state.editingConnectionId) {
         state.editingConnectionId = state.activeConnectionId || (state.connections[0] && state.connections[0].id);
       // }
@@ -287,11 +289,33 @@
       e.target.checked = !e.target.checked;
     } else {
       state.autoSaveDetection = e.target.checked;
+      renderFormModeControl();
     }
   });
 
   function renderAutoDetectToggle() {
     $("autoDetectToggle").checked = state.autoSaveDetection;
+  }
+
+  // Form detection mode (manual confirm vs. auto save)
+  document.querySelectorAll("[data-form-mode]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const mode = btn.dataset.formMode;
+      const res = await sendMsg({ type: "setFormDetectionMode", mode });
+      if (res.ok) {
+        state.formDetectionMode = mode;
+        renderFormModeControl();
+      } else {
+        alert(res.error);
+      }
+    });
+  });
+
+  function renderFormModeControl() {
+    $("formModeRow").classList.toggle("hidden", !state.autoSaveDetection);
+    document.querySelectorAll("[data-form-mode]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.formMode === state.formDetectionMode);
+    });
   }
 
   /* ── Answers view ── */
@@ -937,6 +961,7 @@
     await loadState();
     renderProfiles();
     renderAutoDetectToggle();
+    renderFormModeControl();
     renderAnswersSelect();
     await loadAnswers();
     renderAnswers();

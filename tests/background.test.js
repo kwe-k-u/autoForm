@@ -249,3 +249,82 @@ describe("connection CRUD via handleMessage (end-to-end apiKey masking)", () => 
     expect(await background.decryptApiKey(conn)).toBe("sk-second");
   });
 });
+
+describe("scoreProfileRelevance", () => {
+  const profile = {
+    id: "p1",
+    answers: {
+      email_address: { value: "a@b.com" },
+      first_name: { value: "Jane" },
+      phone_number: { value: "555-1234" }
+    }
+  };
+
+  test("returns zero for a profile with no saved answers", () => {
+    expect(background.scoreProfileRelevance({ id: "empty", answers: {} }, ["Email Address"]))
+      .toEqual({ score: 0, matches: 0 });
+  });
+
+  test("returns zero for a null/undefined profile", () => {
+    expect(background.scoreProfileRelevance(null, ["Email Address"])).toEqual({ score: 0, matches: 0 });
+  });
+
+  test("returns zero when there are no field labels to score", () => {
+    expect(background.scoreProfileRelevance(profile, [])).toEqual({ score: 0, matches: 0 });
+  });
+
+  test("matches field labels against saved answer keys via Dice-token overlap", () => {
+    const result = background.scoreProfileRelevance(profile, ["Email Address", "First Name", "Phone Number"]);
+    expect(result.matches).toBe(3);
+    expect(result.score).toBe(1);
+  });
+
+  test("unrelated field labels don't match", () => {
+    const result = background.scoreProfileRelevance(profile, ["Favorite Color", "Comments"]);
+    expect(result.matches).toBe(0);
+    expect(result.score).toBe(0);
+  });
+});
+
+describe("checkFormRelevance", () => {
+  const profileWithAnswers = {
+    id: "match-me",
+    answers: {
+      email_address: { value: "a@b.com" },
+      first_name: { value: "Jane" },
+      last_name: { value: "Doe" }
+    }
+  };
+  const emptyProfile = { id: "no-answers", answers: {} };
+  const fieldLabels = ["Email Address", "First Name", "Last Name"];
+
+  test("not relevant when there are no profiles", () => {
+    expect(background.checkFormRelevance(fieldLabels, [])).toEqual({ relevant: false, matchedProfileId: null });
+  });
+
+  test("not relevant when no profile clears the match threshold", () => {
+    expect(background.checkFormRelevance(["Favorite Color", "Comments"], [profileWithAnswers, emptyProfile]))
+      .toEqual({ relevant: false, matchedProfileId: null });
+  });
+
+  test("relevant and identifies the best-matching profile among several", () => {
+    expect(background.checkFormRelevance(fieldLabels, [emptyProfile, profileWithAnswers]))
+      .toEqual({ relevant: true, matchedProfileId: "match-me" });
+  });
+});
+
+describe("form detection mode setting", () => {
+  test("defaults to manual, and setFormDetectionMode persists via getState", async () => {
+    const initial = await background.handleMessage({ type: "getState" });
+    expect(initial.formDetectionMode).toBe("manual");
+
+    await background.handleMessage({ type: "setFormDetectionMode", mode: "auto" });
+    const afterAuto = await background.handleMessage({ type: "getState" });
+    expect(afterAuto.formDetectionMode).toBe("auto");
+
+    // Anything other than "auto" coerces back to "manual"
+    await background.handleMessage({ type: "setFormDetectionMode", mode: "bogus" });
+    const afterBogus = await background.handleMessage({ type: "getState" });
+    expect(afterBogus.formDetectionMode).toBe("manual");
+  });
+});

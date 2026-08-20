@@ -1,8 +1,9 @@
 /**
  * Minimal in-memory, promise-based mock of the subset of the `chrome`
  * extension API that background.js touches at module scope and inside
- * its message handlers: `chrome.storage.local.get/set/remove` and
- * `chrome.runtime.onMessage.addListener`.
+ * its message handlers: `chrome.storage.local.get/set/remove`,
+ * `chrome.runtime.onMessage/onInstalled.addListener`, `chrome.contextMenus`,
+ * and `chrome.tabs.sendMessage`.
  */
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -38,7 +39,18 @@ function createChromeMock() {
     storage: { local },
     runtime: {
       onMessage: { addListener() {} },
+      onInstalled: { addListener() {} },
       lastError: undefined
+    },
+    contextMenus: {
+      create() {},
+      removeAll(cb) {
+        if (cb) cb();
+      },
+      onClicked: { addListener() {} }
+    },
+    tabs: {
+      sendMessage() {}
     }
   };
 }

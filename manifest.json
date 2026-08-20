@@ -3,7 +3,7 @@
   "name": "autoForm — Application Autofiller",
   "version": "1.0.0",
   "description": "Learn answers from forms you fill, store them in profiles, autofill future applications, and use an LLM to suggest answers.",
-  "permissions": ["storage", "activeTab", "webNavigation", "scripting"],
+  "permissions": ["storage", "activeTab", "webNavigation", "scripting", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

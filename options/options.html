@@ -33,12 +33,19 @@
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
             <div>
               <strong>Auto-detect forms</strong>
-              <p class="hint" style="margin-bottom:0;">Use AI to detect application forms and automatically enable answer saving on those pages.</p>
+              <p class="hint" style="margin-bottom:0;">Use AI to detect application forms relevant to your profile, then either ask before saving or save automatically.</p>
             </div>
             <label class="switch-wrap">
               <input type="checkbox" id="autoDetectToggle" />
               <span class="switch-slider"></span>
             </label>
+          </div>
+          <div id="formModeRow" class="hidden" style="margin-top:10px;">
+            <p class="hint" style="margin-bottom:6px;">When a relevant form is detected:</p>
+            <div class="view-toggle" id="formModeToggle">
+              <button class="view-toggle-btn" data-form-mode="manual">Ask me first</button>
+              <button class="view-toggle-btn" data-form-mode="auto">Save automatically</button>
+            </div>
           </div>
         </div>
         <p class="hint">Profiles group your answers by purpose, e.g. "Job Application" or "Small Business".</p>

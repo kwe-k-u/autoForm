@@ -272,7 +272,7 @@
     $("connectionHint").textContent =
       state.connections.length === 0
         ? "Add one in Settings to use AI suggestions."
-        : "Used by the ✨ Suggest button.";
+        : "Used by the Suggest button.";
   }
 
   /* ── Answer count display ── */
@@ -395,7 +395,7 @@
       let extra = "";
       if (msg.type === "FF_SUGGEST") {
         const ok = res.results.filter((r) => r && r.ok);
-        const counts = ok.map((r) => `${r.count ?? 0}+${r.autofilled ?? 0}`).join(", ");
+        const counts = ok.map((r) => `${r.accepted ?? 0} accepted, ${r.skipped ?? 0} skipped`).join(" | ");
         extra = ok.length ? ` (${counts})` : "";
       } else if (msg.type === "FF_AUTOFILL") {
         const ok = res.results.filter((r) => r && r.ok);
@@ -412,7 +412,11 @@
     runPageAction($("autofillNowBtn"), { type: "FF_AUTOFILL" }, "Autofilled");
   });
 
-  // "Suggest with AI" — LLM generates answers for empty fields
+  // "Suggest with AI" — reviews each empty field one at a time in the page itself.
+  // Clicking into the page to accept/skip a field closes this popup and tears down
+  // this script's context — that's expected, not a bug: suggestAll() runs entirely
+  // in content-script.js in the tab and keeps going regardless. Only the "Working…"
+  // → final-status transition below may never render if the popup is gone by then.
   $("suggestBtn").addEventListener("click", () => {
     runPageAction($("suggestBtn"), { type: "FF_SUGGEST" }, "Done");
   });
