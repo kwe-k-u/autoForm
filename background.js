@@ -1041,6 +1041,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
+/* ── Right-click context menu: "Suggest AI answer" / "Prefill" on form fields ── */
+
+const CONTEXT_MENU_SUGGEST_ID = "ff-suggest-ai";
+const CONTEXT_MENU_PREFILL_ID = "ff-prefill";
+
+// (Re)create the menu items on install/update so edits to their titles take effect.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_SUGGEST_ID,
+      title: "Suggest AI answer",
+      contexts: ["editable"]
+    });
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_PREFILL_ID,
+      title: "Prefill from profile",
+      contexts: ["editable"]
+    });
+  });
+});
+
+/**
+ * Forward a context-menu click to the content script of the exact tab/frame
+ * that was right-clicked. The content script tracks which field triggered
+ * the native context menu (see its "contextmenu" listener) and applies the
+ * suggestion there. `chrome.tabs.sendMessage` fails with no receiver on
+ * pages without a content script (e.g. chrome:// pages) — ignored, since
+ * the field couldn't have been eligible there anyway.
+ */
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (!tab || tab.id == null) return;
+  if (info.menuItemId !== CONTEXT_MENU_SUGGEST_ID && info.menuItemId !== CONTEXT_MENU_PREFILL_ID) return;
+  chrome.tabs.sendMessage(
+    tab.id,
+    { type: "FF_CONTEXT_SUGGEST", useAI: info.menuItemId === CONTEXT_MENU_SUGGEST_ID },
+    { frameId: info.frameId },
+    () => { void chrome.runtime.lastError; }
+  );
+});
+
 /* ── Test hook ──
  * `module` only exists under Node/Jest, never in the service worker, so this
  * has no effect on the running extension — it just lets the test suite

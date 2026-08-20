@@ -47,6 +47,9 @@
   let pageAutoSave = false;
   let pageAutoSaveChecked = false;  // Ensures LLM detection runs only once per load
 
+  /** The element under the cursor the last time the native context menu opened */
+  let lastContextMenuTarget = null;
+
   /** Map of key → { key, value, source, question } awaiting flush to background */
   const pending = new Map();
   let flushTimer = null;     // Debounce timer for flushing pending answers
@@ -721,6 +724,280 @@
     });
   }
 
+  /* ── Anchored per-field suggestion preview (used by "Suggest with AI") ── */
+
+  const FIELD_PREVIEW_ID = "__ff_field_preview";
+  const FIELD_PREVIEW_OPTIONS_ID = "__ff_field_preview_options";
+  const FIELD_LOADING_ID = "__ff_field_loading";
+
+  /**
+   * Pins a floating box to `el`'s on-screen position: highlights the field,
+   * scrolls it into view once, and keeps whatever box is currently shown
+   * synced to the field's position via scroll/resize listeners. Multiple
+   * boxes can be swapped in over the anchor's lifetime (e.g. a loading
+   * indicator handed off to a preview box) without re-highlighting or
+   * re-scrolling. `destroy()` tears everything down and restores the
+   * field's original outline.
+   */
+  function createFieldAnchor(el) {
+    const originalOutline = el.style.outline;
+    const originalOutlineOffset = el.style.outlineOffset;
+    el.style.outline = "2px solid #6366f1";
+    el.style.outlineOffset = "2px";
+    el.scrollIntoView({ block: "center", behavior: "auto" });
+
+    let box = null;
+    let onDisconnected = null;
+
+    function reposition() {
+      if (!el.isConnected) {
+        if (onDisconnected) onDisconnected();
+        return;
+      }
+      if (!box) return;
+      const rect = el.getBoundingClientRect();
+      const boxRect = box.getBoundingClientRect();
+      const bw = boxRect.width || 300;
+      const bh = boxRect.height || 60;
+      let left = Math.min(Math.max(rect.left, 8), window.innerWidth - bw - 8);
+      if (left < 8) left = 8;
+      let top;
+      if (window.innerHeight - rect.bottom >= bh + 8) {
+        top = rect.bottom + 8;
+      } else if (rect.top >= bh + 8) {
+        top = rect.top - bh - 8;
+      } else {
+        top = Math.min(Math.max(rect.bottom + 8, 8), window.innerHeight - bh - 8);
+      }
+      box.style.left = `${left}px`;
+      box.style.top = `${top}px`;
+      box.style.visibility = "visible";
+    }
+
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+
+    return {
+      show(newBox) {
+        if (box) box.remove();
+        box = newBox;
+        document.documentElement.appendChild(box);
+        reposition();
+      },
+      setOnDisconnected(fn) {
+        onDisconnected = fn;
+      },
+      destroy() {
+        window.removeEventListener("scroll", reposition, true);
+        window.removeEventListener("resize", reposition);
+        if (box) box.remove();
+        box = null;
+        el.style.outline = originalOutline;
+        el.style.outlineOffset = originalOutlineOffset;
+      }
+    };
+  }
+
+  /**
+   * Show a small "thinking" indicator anchored next to `el` while an LLM
+   * suggestion is being requested for it. Returns `{ anchor, dismiss() }` --
+   * call `dismiss()` if no preview will follow (error/no suggestion), or
+   * hand `anchor` to `showFieldPreview` to reuse the same highlight/scroll
+   * position instead of restarting them.
+   */
+  function showFieldLoading(el) {
+    const anchor = createFieldAnchor(el);
+
+    const box = document.createElement("div");
+    box.id = FIELD_LOADING_ID;
+    box.style.cssText = [
+      "position:fixed", "top:-9999px", "left:-9999px", "visibility:hidden",
+      "z-index:2147483647", "display:flex", "align-items:center", "gap:8px",
+      "background:#1e293b", "color:#f8fafc", "padding:10px 14px",
+      "border-radius:10px", "box-shadow:0 4px 20px rgba(0,0,0,0.35)",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+      "font-size:13px"
+    ].join(";");
+
+    const spinStyle = document.createElement("style");
+    spinStyle.textContent = "@keyframes __ff_spin{to{transform:rotate(360deg)}}";
+    box.appendChild(spinStyle);
+
+    const spinner = document.createElement("div");
+    spinner.style.cssText =
+      "width:14px;height:14px;border-radius:50%;flex:none;" +
+      "border:2px solid rgba(248,250,252,0.25);border-top-color:#f8fafc;" +
+      "animation:__ff_spin 0.7s linear infinite;";
+    box.appendChild(spinner);
+
+    const text = document.createElement("span");
+    text.textContent = "autoForm is thinking...";
+    box.appendChild(text);
+
+    anchor.show(box);
+
+    return {
+      anchor,
+      dismiss() {
+        anchor.destroy();
+      }
+    };
+  }
+
+  /**
+   * Show a brief anchored message next to `el` (e.g. "No saved answer for
+   * this field") that auto-dismisses after a couple of seconds. Used for
+   * feedback from the right-click context-menu actions, which have no
+   * popup UI to report errors into.
+   */
+  function showFieldMessage(el, text, isError) {
+    const anchor = createFieldAnchor(el);
+    const box = document.createElement("div");
+    box.style.cssText = [
+      "position:fixed", "top:-9999px", "left:-9999px", "visibility:hidden",
+      "z-index:2147483647", "max-width:280px",
+      `background:${isError ? "#7f1d1d" : "#1e293b"}`, "color:#f8fafc", "padding:10px 14px",
+      "border-radius:10px", "box-shadow:0 4px 20px rgba(0,0,0,0.35)",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+      "font-size:13px"
+    ].join(";");
+    box.textContent = text;
+    anchor.show(box);
+    setTimeout(() => anchor.destroy(), 2500);
+  }
+
+  /**
+   * Show an editable preview box anchored next to `el`, pre-filled with
+   * `suggestedValue`. Returns a promise resolving to
+   * `{ action: "accept" | "skip" | "stop", value }` -- `value` is the
+   * (possibly user-edited) string, meaningful only when action is "accept".
+   * The actual `applyValue` call happens inside the Accept handler so a
+   * failed fuzzy-match (unmatched select/radio option) can keep the popup
+   * open with an inline error instead of silently resolving as accepted.
+   * Pass `existingAnchor` (e.g. from `showFieldLoading`) to reuse an
+   * already-highlighted, already-scrolled-to anchor instead of a fresh one.
+   */
+  function showFieldPreview(el, question, suggestedValue, existingAnchor) {
+    return new Promise((resolve) => {
+      const anchor = existingAnchor || createFieldAnchor(el);
+
+      const box = document.createElement("div");
+      box.id = FIELD_PREVIEW_ID;
+      box.style.cssText = [
+        "position:fixed", "top:-9999px", "left:-9999px", "visibility:hidden",
+        "z-index:2147483647", "width:300px", "max-width:calc(100vw - 16px)",
+        "background:#1e293b", "color:#f8fafc", "padding:12px",
+        "border-radius:10px", "box-shadow:0 4px 20px rgba(0,0,0,0.35)",
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+        "font-size:13px", "display:flex", "flex-direction:column", "gap:8px"
+      ].join(";");
+
+      const labelEl = document.createElement("div");
+      labelEl.textContent = question || "Suggested answer";
+      labelEl.style.cssText = "font-weight:600;overflow-wrap:break-word;";
+      box.appendChild(labelEl);
+
+      const isMultiline = fieldType(el) === "textarea";
+      const input = document.createElement(isMultiline ? "textarea" : "input");
+      if (!isMultiline) input.type = "text";
+      input.value = suggestedValue == null ? "" : String(suggestedValue);
+      input.style.cssText =
+        "width:100%;box-sizing:border-box;background:#0f172a;color:#f8fafc;" +
+        "border:1px solid #334155;border-radius:6px;padding:6px 8px;" +
+        "font-size:13px;font-family:inherit;" +
+        (isMultiline ? "min-height:56px;resize:vertical;" : "");
+
+      const fieldOptions = optionsFor(el);
+      if (fieldOptions && fieldOptions.length) {
+        const datalist = document.createElement("datalist");
+        datalist.id = FIELD_PREVIEW_OPTIONS_ID;
+        for (const opt of fieldOptions) {
+          const o = document.createElement("option");
+          o.value = opt;
+          datalist.appendChild(o);
+        }
+        box.appendChild(datalist);
+        input.setAttribute("list", FIELD_PREVIEW_OPTIONS_ID);
+      }
+      box.appendChild(input);
+
+      const errorLine = document.createElement("div");
+      errorLine.style.cssText = "color:#f87171;font-size:12px;display:none;";
+      box.appendChild(errorLine);
+
+      const btnRow = document.createElement("div");
+      btnRow.style.cssText = "display:flex;gap:8px;align-items:center;";
+
+      const stopBtn = document.createElement("button");
+      stopBtn.textContent = "Stop";
+      stopBtn.style.cssText = "background:transparent;color:#94a3b8;border:none;padding:5px 8px;cursor:pointer;font-size:12px;margin-right:auto;";
+
+      const skipBtn = document.createElement("button");
+      skipBtn.textContent = "Skip";
+      skipBtn.style.cssText = "background:#64748b;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;";
+
+      const acceptBtn = document.createElement("button");
+      acceptBtn.textContent = String.fromCharCode(0x2713) + " Accept";
+      acceptBtn.style.cssText = "background:#22c55e;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;font-weight:600;";
+
+      btnRow.append(stopBtn, skipBtn, acceptBtn);
+      box.appendChild(btnRow);
+
+      let settled = false;
+      let timeoutId = null;
+
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        anchor.destroy();
+      };
+
+      const settle = (result) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+
+      anchor.setOnDisconnected(() => settle({ action: "skip", value: null }));
+      anchor.show(box);
+
+      acceptBtn.addEventListener("click", () => {
+        const value = input.value;
+        window.__FF_AUTOFILLING = true;
+        let ok;
+        try {
+          ok = applyValue(el, value);
+        } finally {
+          window.__FF_AUTOFILLING = false;
+        }
+        if (ok) {
+          settle({ action: "accept", value });
+        } else {
+          errorLine.textContent = "Couldn't match that to one of this field's options -- edit it or Skip.";
+          errorLine.style.display = "block";
+        }
+      });
+
+      skipBtn.addEventListener("click", () => settle({ action: "skip", value: null }));
+      stopBtn.addEventListener("click", () => settle({ action: "stop", value: null }));
+
+      box.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          settle({ action: "skip", value: null });
+        } else if (e.key === "Enter" && e.target === input && !isMultiline) {
+          e.preventDefault();
+          acceptBtn.click();
+        }
+      });
+
+      timeoutId = setTimeout(() => settle({ action: "skip", value: null }), 30000);
+
+      input.focus();
+      input.select();
+    });
+  }
+
   /* ── LLM form detection (once per page load) ── */
 
   /**
@@ -757,10 +1034,11 @@
   }
 
   /**
-   * "Suggest with AI" pipeline.
-   * 1. Heuristic-fill from profile (like runAutofill without LLM).
-   * 2. Send remaining unfilled fields to background for LLM suggestions.
-   * 3. Apply suggestions and mark as learned.
+   * "Suggest with AI" pipeline — reviews every eligible empty field one at a
+   * time. For each field, finds a candidate answer (an exact saved-profile
+   * match first, an LLM guess otherwise), shows it in an editable preview
+   * anchored to the field (see showFieldPreview above), and only fills it
+   * in once the user accepts.
    */
   async function suggestAll() {
     await refreshState();
@@ -770,83 +1048,164 @@
     const profile = await getProfile(state.activeProfileId);
     if (!profile) return { ok: false, error: "Active profile could not be loaded." };
 
-    let autofilled = 0;
-    const toSuggest = [];
     const fields = visibleEligibleFields();
+    let accepted = 0;
+    let skipped = 0;
+    let anyShown = false;
 
     for (const el of fields) {
+      if (!el.isConnected || !isEligible(el)) continue;
+      if (hasExistingValue(el) || isTouched(el)) continue;
+
       const label = fieldQuestion(el);
       const labelKey = normalizeKey(label);
       const nameKey = normalizeKey(el.getAttribute("name") || el.id);
-      const answer = matchAnswer(profile, labelKey, nameKey);
+      const key = labelKey || nameKey;
+      const question = label || humanize(nameKey);
 
-      if (answer && !hasExistingValue(el)) {
-        window.__FF_AUTOFILLING = true;
-        try {
-          if (applyValue(el, answer.value)) {
-            markTouched(el);
-            autofilled++;
-          }
-        } finally {
-          window.__FF_AUTOFILLING = false;
+      const profileAnswer = matchAnswer(profile, labelKey, nameKey);
+      let value;
+      let source;
+      let loadingAnchor = null;
+
+      if (profileAnswer) {
+        value = profileAnswer.value;
+        source = "profile";
+      } else {
+        const loading = showFieldLoading(el);
+        loadingAnchor = loading.anchor;
+        const res = await sendMsg({
+          type: "suggestAnswers",
+          profileId: state.activeProfileId,
+          fields: [{ key, question, fieldType: fieldType(el), options: optionsFor(el) }]
+        });
+        const item = res.ok && res.data ? res.data[0] : null;
+        const errMsg = !res.ok ? res.error : (item && item.error) || null;
+        if (errMsg) {
+          loading.dismiss();
+          // No connection / broken LLM before anything was shown — fail fast with one clear error
+          // instead of silently walking through every remaining field showing nothing.
+          if (!anyShown) return { ok: false, error: errMsg };
+          continue; // isolated failure after a working run — skip this field only
         }
+        if (!item || item.suggested == null) {
+          loading.dismiss();
+          continue; // no suggestion available — skip silently
+        }
+        value = item.suggested;
+        source = "llm";
+      }
+
+      if (!el.isConnected) {
+        // Field vanished (SPA re-render) while its LLM suggestion was loading
+        if (loadingAnchor) loadingAnchor.destroy();
         continue;
       }
-      if (hasExistingValue(el) || isTouched(el)) continue;
-      toSuggest.push({
-        key: labelKey || nameKey,
-        question: label || humanize(nameKey),
-        fieldType: fieldType(el),
-        options: optionsFor(el),
-        _el: el
-      });
-    }
 
-    if (!toSuggest.length) {
-      return { ok: true, count: 0, autofilled, message: "No unanswered fields found on this page." };
-    }
-
-    // Strip DOM elements before sending to background
-    const payload = toSuggest.map(({ _el, ...rest }) => rest);
-    const res = await sendMsg({
-      type: "suggestAnswers",
-      profileId: state.activeProfileId,
-      fields: payload
-    });
-    if (!res.ok) throw new Error(res.error);
-
-    let suggested = 0;
-    for (let i = 0; i < res.data.length; i++) {
-      const item = res.data[i];
-      if (item.error || item.suggested == null) continue;
-      const el = toSuggest[i]._el;
-      window.__FF_AUTOFILLING = true;
-      try {
-        if (applyValue(el, item.suggested)) {
-          markTouched(el);
-          suggested++;
-        }
-      } finally {
-        window.__FF_AUTOFILLING = false;
+      anyShown = true;
+      const result = await showFieldPreview(el, question, value, loadingAnchor);
+      if (result.action === "stop") break;
+      if (result.action === "skip") {
+        skipped++;
+        continue;
       }
-      // Queue LLM-sourced answers for persistence
-      pending.set(toSuggest[i].key, {
-        key: toSuggest[i].key,
-        value: item.suggested,
-        source: "llm",
-        question: toSuggest[i].question || null
-      });
+
+      markTouched(el);
+      accepted++;
+      if (key) {
+        pending.set(key, { key, value: result.value, source, question: question || null });
+        scheduleFlush();
+      }
     }
-    scheduleFlush();
 
     return {
       ok: true,
-      count: suggested,
-      autofilled,
-      message: suggested
-        ? `Suggested ${suggested} answer(s), autofilled ${autofilled} from profile.`
-        : `Autofilled ${autofilled} from profile. No LLM suggestions returned.`
+      accepted,
+      skipped,
+      message: !anyShown
+        ? "No unanswered fields found on this page."
+        : `Accepted ${accepted}, skipped ${skipped}.`
     };
+  }
+
+  /**
+   * Handle a "Suggest AI answer" / "Prefill from profile" right-click on a
+   * single field (see the "contextmenu" listener and background.js's
+   * context-menu setup). `useAI` true always asks the LLM; false looks up
+   * an exact saved-profile match only (no LLM call). Either way the result
+   * goes through the same editable, anchored preview as "Suggest with AI",
+   * unlike that bulk flow this bypasses the already-filled/already-touched
+   * checks, since the user explicitly targeted this one field.
+   */
+  async function suggestForContextField(useAI) {
+    const el = lastContextMenuTarget;
+    if (!el || !el.isConnected || !isEligible(el)) {
+      return { ok: false, error: "No eligible field was right-clicked." };
+    }
+
+    await refreshState();
+    if (!state.activeProfileId) {
+      return { ok: false, error: "No active profile. Create or select one in the autoForm popup." };
+    }
+    const profile = await getProfile(state.activeProfileId);
+    if (!profile) return { ok: false, error: "Active profile could not be loaded." };
+
+    const label = fieldQuestion(el);
+    const labelKey = normalizeKey(label);
+    const nameKey = normalizeKey(el.getAttribute("name") || el.id);
+    const key = labelKey || nameKey;
+    const question = label || humanize(nameKey);
+
+    let value;
+    let source;
+    let loadingAnchor = null;
+
+    if (!useAI) {
+      const profileAnswer = matchAnswer(profile, labelKey, nameKey);
+      if (!profileAnswer) {
+        showFieldMessage(el, "No saved answer found for this field.", true);
+        return { ok: false, error: "No saved answer found for this field." };
+      }
+      value = profileAnswer.value;
+      source = "profile";
+    } else {
+      const loading = showFieldLoading(el);
+      loadingAnchor = loading.anchor;
+      const res = await sendMsg({
+        type: "suggestAnswers",
+        profileId: state.activeProfileId,
+        fields: [{ key, question, fieldType: fieldType(el), options: optionsFor(el) }]
+      });
+      const item = res.ok && res.data ? res.data[0] : null;
+      const errMsg = !res.ok ? res.error : (item && item.error) || null;
+      if (errMsg) {
+        loading.dismiss();
+        showFieldMessage(el, errMsg, true);
+        return { ok: false, error: errMsg };
+      }
+      if (!item || item.suggested == null) {
+        loading.dismiss();
+        showFieldMessage(el, "The AI didn't return a suggestion for this field.", true);
+        return { ok: false, error: "No suggestion returned." };
+      }
+      value = item.suggested;
+      source = "llm";
+    }
+
+    if (!el.isConnected) {
+      if (loadingAnchor) loadingAnchor.destroy();
+      return { ok: false, error: "The field is no longer on the page." };
+    }
+
+    const result = await showFieldPreview(el, question, value, loadingAnchor);
+    if (result.action === "accept") {
+      markTouched(el);
+      if (key) {
+        pending.set(key, { key, value: result.value, source, question: question || null });
+        scheduleFlush();
+      }
+    }
+    return { ok: true, action: result.action };
   }
 
   /* ── Message listener (receives commands from popup) ── */
@@ -863,6 +1222,8 @@
           return { ok: true, message: "Saved this page's answers." };
         case "FF_SUGGEST":
           return suggestAll();
+        case "FF_CONTEXT_SUGGEST":
+          return suggestForContextField(!!msg.useAI);
         case "FF_CLEAR_TOUCHED":
           // Reset touch tracking so fields can be re-filled
           document
@@ -912,6 +1273,11 @@
   });
 
   /* ── Page event listeners ── */
+
+  // Track the right-clicked element so the "Suggest AI answer"/"Prefill"
+  // context-menu items (background.js) know which field to act on --
+  // chrome.contextMenus.onClicked never hands back a DOM reference itself.
+  document.addEventListener("contextmenu", (e) => { lastContextMenuTarget = e.target; }, true);
 
   // Auto-save: record values as the user types or changes fields
   document.addEventListener("input", onFieldInput, true);
