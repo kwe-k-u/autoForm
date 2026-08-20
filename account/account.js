@@ -9,13 +9,12 @@
  *   - Sign-out (clears stored account, keeps local data)
  *   - Plan display (Free/Pro/Local with limits text)
  *
- * Firebase is initialised via `firebase-config.js` (auto-generated from .env).
- * The SDK is loaded as a vendored compat UMD bundle in account.html.
- *
- * NOTE: signInWithPopup requires Google Identity Services which MV3 service
- * workers cannot inject. This page runs as a full document in a popup window
- * where the script CAN load. However, if the origin block is encountered,
- * the offscreen-document pattern (not yet implemented) would be needed.
+ * signInWithPopup can't complete its handshake with Google from this page's
+ * chrome-extension:// origin (fails with auth/internal-error), so sign-in is
+ * delegated to background.js, which bridges it through an offscreen document
+ * to a hosted https:// page. See background.js's firebaseAuthSignIn() and
+ * offscreen.js. This page only needs `firebase-config.js` to know whether
+ * sign-in is configured at all -- it never calls the Firebase SDK directly.
  */
 (() => {
   "use strict";
@@ -34,28 +33,6 @@
       !!globalThis.FIREBASE_CONFIG &&
       !!globalThis.FIREBASE_CONFIG.apiKey
     );
-  }
-
-  /** True when the vendored Firebase SDK UMD bundles have loaded */
-  function sdkLoaded() {
-    return typeof firebase !== "undefined" && firebase.auth && firebase.auth.GoogleAuthProvider;
-  }
-
-  /**
-   * Initialise (or retrieve) the Firebase app named "autoform".
-   * Returns the app instance, or null on failure.
-   */
-  function initAuth() {
-    if (!firebaseAvailable() || !sdkLoaded()) return null;
-    try {
-      return firebase.initializeApp(globalThis.FIREBASE_CONFIG, "autoform");
-    } catch (e) {
-      try {
-        return firebase.app("autoform");
-      } catch (e2) {
-        return null;
-      }
-    }
   }
 
   /* ── Account persistence ── */
@@ -121,18 +98,17 @@
   /* ── Sign-in flow ── */
 
   /**
-   * Perform sign-in using a Firebase Auth provider (Google or Apple).
-   * Opens a popup for the OAuth flow, saves the resulting account to
-   * storage, and updates the UI. Errors (including auth/internal-error
-   * from MV3 origin blocking) are shown in the status bar.
+   * Perform sign-in for "google" or "apple" by asking background.js to run
+   * it through the offscreen-document bridge (see the file header comment).
+   * Saves the resulting account to storage and updates the UI.
    */
-  async function signIn(provider) {
+  async function signIn(providerName) {
     setStatus("Signing in…");
     try {
-      const app = initAuth();
-      if (!app) throw new Error("Sign-in isn't configured.");
-      const cred = await firebase.auth(app).signInWithPopup(provider);
-      const u = cred.user;
+      const res = await chrome.runtime.sendMessage({ type: "firebaseAuthSignIn", provider: providerName });
+      console.log("res",res);
+      if (!res || !res.ok) throw new Error((res && res.error) || "Sign-in failed.");
+      const u = res.data;
       const account = FFAccount.signedInAccount(
         {
           uid: u.uid,
@@ -140,7 +116,7 @@
           displayName: u.displayName,
           photoURL: u.photoURL
         },
-        { provider: provider.providerId }
+        { provider: providerName === "apple" ? "apple.com" : "google.com" }
       );
       await saveAccount(account);
       render(account);
@@ -162,16 +138,12 @@
       $("appleBtn").disabled = true;
     }
 
-    if (!configured || !sdkLoaded()) {
-      $("googleBtn").addEventListener("click", () => setStatus("Firebase SDK not loaded.", true));
-      $("appleBtn").addEventListener("click", () => setStatus("Firebase SDK not loaded.", true));
+    if (!configured) {
+      $("googleBtn").addEventListener("click", () => setStatus("Sign-in isn't configured.", true));
+      $("appleBtn").addEventListener("click", () => setStatus("Sign-in isn't configured.", true));
     } else {
-      $("googleBtn").addEventListener("click", () =>
-        signIn(new firebase.auth.GoogleAuthProvider())
-      );
-      $("appleBtn").addEventListener("click", () =>
-        signIn(new firebase.auth.OAuthProvider("apple.com"))
-      );
+      $("googleBtn").addEventListener("click", () => signIn("google"));
+      $("appleBtn").addEventListener("click", () => signIn("apple"));
     }
 
     // "Use locally" — creates a local (non-signed-in) account object
@@ -185,17 +157,11 @@
       }
     });
 
-    // Sign out — clears Firebase session and stored account
+    // Sign out — the sign-in session lives only briefly in the hosted auth
+    // page, not in this page, so there's nothing to sign out of here beyond
+    // clearing the stored account.
     $("signOutBtn").addEventListener("click", async () => {
       setStatus("Signing out…");
-      const app = initAuth();
-      if (app) {
-        try {
-          await firebase.auth(app).signOut();
-        } catch {
-          /* ignore sign-out errors */
-        }
-      }
       try {
         await removeAccount();
         render(FFAccount.localAccount());

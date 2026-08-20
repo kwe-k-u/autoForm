@@ -809,6 +809,71 @@ async function mergeConnection(base, input) {
   return c;
 }
 
+/* ── Firebase sign-in via offscreen document ──
+ * signInWithPopup can't complete its handshake with Google from a
+ * chrome-extension:// origin (fails with auth/internal-error), so the real
+ * sign-in call runs on a hosted https:// page (landing/authhandler.js),
+ * loaded in a hidden iframe inside a Manifest V3 offscreen document.
+ * See: https://firebase.google.com/docs/auth/web/chrome-extension
+ */
+
+const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+let creatingOffscreenDocument = null;
+
+/** True if the offscreen document is already open. */
+async function hasOffscreenDocument() {
+  const url = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+  if (chrome.runtime.getContexts) {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [url]
+    });
+    return contexts.length > 0;
+  }
+  // Fallback for older Chrome versions without chrome.runtime.getContexts
+  const matchedClients = await clients.matchAll();
+  return matchedClients.some((c) => c.url === url);
+}
+
+/** Create the offscreen document if one isn't already open. Safe to call concurrently. */
+async function ensureOffscreenDocument() {
+  if (await hasOffscreenDocument()) return;
+  if (creatingOffscreenDocument) {
+    await creatingOffscreenDocument;
+    return;
+  }
+  creatingOffscreenDocument = chrome.offscreen.createDocument({
+    url: OFFSCREEN_DOCUMENT_PATH,
+    reasons: ["DOM_SCRAPING"],
+    justification: "Bridge Google/Apple sign-in through a hosted page, since signInWithPopup can't run directly in an extension context."
+  });
+  try {
+    await creatingOffscreenDocument;
+  } finally {
+    creatingOffscreenDocument = null;
+  }
+}
+
+/**
+ * Sign in with Google or Apple via the offscreen-document bridge. Returns
+ * the signed-in user's { uid, email, displayName, photoURL }.
+ */
+async function firebaseAuthSignIn(provider) {
+  await ensureOffscreenDocument();
+  console.log("running");
+  try {
+    console.log("were",provider);
+    const res = await chrome.runtime.sendMessage({ type: "firebase-auth", target: "offscreen", provider });
+    console.log("loggin res",res);
+    if (!res || res.error) {
+      throw new Error((res && res.error && res.error.message) || "Sign-in failed.");
+    }
+    return res.user;
+  } finally {
+    await chrome.offscreen.closeDocument().catch(() => {});
+  }
+}
+
 /* ── Message router ── */
 
 /**
@@ -942,6 +1007,9 @@ async function handleMessage(msg) {
       return { ok: true };
     }
 
+    case "firebaseAuthSignIn":
+      return firebaseAuthSignIn(msg.provider);
+
     /* ── LLM connection CRUD ── */
 
     case "listConnections": {
@@ -1039,6 +1107,10 @@ async function handleMessage(msg) {
  * `return true` keeps the message channel open for the async response.
  */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Messages targeted at the offscreen document (see firebaseAuthSignIn) are
+  // a chrome.runtime broadcast, not a targeted send -- this listener isn't
+  // the intended recipient and must not race offscreen.js's real response.
+  if (msg && msg.target === "offscreen") return false;
   handleMessage(msg)
     .then((result) => sendResponse({ ok: true, data: result }))
     .catch((err) => sendResponse({ ok: false, error: err.message }));

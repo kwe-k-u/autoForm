@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="robots" content="noindex" />
+  <title>autoForm sign-in</title>
+</head>
+<body>
+  <!-- Not a page for people: this is loaded in a hidden iframe by the autoForm
+       extension's offscreen document to complete Google/Apple sign-in, since
+       Firebase's signInWithPopup can't run directly inside an extension page.
+       See offscreen.js and account/account.js in the extension. -->
+  <script src="firebase-config.js"></script>
+  <script type="module" src="authhandler.js"></script>
+</body>
+</html>

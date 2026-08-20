@@ -1273,6 +1273,10 @@
   /* ── Message listener (receives commands from popup) ── */
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    // Only handle this extension's own FF_-prefixed commands -- chrome.runtime
+    // broadcasts (e.g. the offscreen sign-in bridge, see background.js) reach
+    // every tab's content script too, and must not get a response from here.
+    if (!msg || typeof msg.type !== "string" || !msg.type.startsWith("FF_")) return false;
     (async () => {
       switch (msg.type) {
         case "FF_AUTOFILL":
