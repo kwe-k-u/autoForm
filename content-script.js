@@ -43,6 +43,23 @@
   /** Hostname of the current page, stored with every saved answer */
   const PAGE_SITE = location.hostname || null;
 
+  /**
+   * Friendly application/site name for the current page, stored alongside
+   * PAGE_SITE so the options UI can display it instead of the raw hostname.
+   * Prefers the page's declared site name (og:site_name / application-name)
+   * over the document title, since titles often include the specific
+   * page/article name rather than the site's brand name.
+   */
+  const PAGE_NAME = (() => {
+    const meta = document.querySelector(
+      'meta[property="og:site_name"], meta[name="application-name"]'
+    );
+    const metaName = meta && meta.content ? meta.content.trim() : "";
+    if (metaName) return metaName;
+    const title = document.title ? document.title.trim() : "";
+    return title || null;
+  })();
+
   /** Per-page auto-save toggle (toggled by user or LLM detection) */
   let pageAutoSave = false;
   let pageAutoSaveChecked = false;  // Ensures LLM detection runs only once per load
@@ -490,7 +507,7 @@
     sendMsg({
       type: "saveAnswers",
       profileId: state.activeProfileId,
-      pairs: pairs.map((p) => ({ ...p, site: PAGE_SITE }))
+      pairs: pairs.map((p) => ({ ...p, site: PAGE_SITE, siteName: PAGE_NAME }))
     }).catch((err) => console.warn("[autoForm]", (err && err.message) || "Failed to save answers"));
   }
 
@@ -633,7 +650,7 @@
         const key = fieldKey(el);
         const value = readValue(el);
         const question = fieldQuestion(el);
-        return key && value ? { key, value, source: "learned", site: PAGE_SITE, question: question || null } : null;
+        return key && value ? { key, value, source: "learned", site: PAGE_SITE, siteName: PAGE_NAME, question: question || null } : null;
       })
       .filter(Boolean);
     if (pairs.length) {

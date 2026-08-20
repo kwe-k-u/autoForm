@@ -318,6 +318,7 @@ async function saveAnswers(profileId, pairs) {
     if (!key) continue;
     const value = typeof pair.value === "string" ? pair.value.trim() : pair.value;
     const site = pair.site ? String(pair.site).slice(0, 255) : null;
+    const siteName = pair.siteName ? String(pair.siteName).slice(0, 255) : null;
 
     // Empty value → delete the answer
     if (value === undefined || value === null || value === "") {
@@ -327,6 +328,7 @@ async function saveAnswers(profileId, pairs) {
     }
 
     const existing = profile.answers[key];
+    console.log("existing",existing);
     if (!existing || existing.value !== value) {
       // New or changed value → upsert
       const question = pair.question
@@ -337,6 +339,7 @@ async function saveAnswers(profileId, pairs) {
         source: pair.source || existing?.source || "learned",
         updatedAt: Date.now(),
         firstSeenOn: existing?.firstSeenOn || site,
+        appName: existing?.appName || siteName,
         lastSeenOn: site || existing?.lastSeenOn || null,
         sites: appendSite(existing?.sites, site)
       };
@@ -346,6 +349,7 @@ async function saveAnswers(profileId, pairs) {
       // Same value but new site → just update site tracking
       existing.lastSeenOn = site;
       existing.sites = appendSite(existing.sites, site);
+      if (!existing.appName && siteName) existing.appName = siteName;
       changed = true;
     }
   }

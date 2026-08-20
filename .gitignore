@@ -5,3 +5,6 @@ test-forms/*
 
 # Node
 node_modules/
+
+# Local-only dummy forms for manually testing autofill/capture
+/test-forms/
