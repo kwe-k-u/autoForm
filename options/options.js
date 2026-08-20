@@ -96,9 +96,9 @@
       state.activeConnectionId = res.data.activeConnectionId;
       state.autoSaveDetection = res.data.autoSaveDetection === true;
       state.formDetectionMode = res.data.formDetectionMode === "auto" ? "auto" : "manual";
-      if (!state.editingConnectionId) {
+      // if (!state.editingConnectionId) {
         state.editingConnectionId = state.activeConnectionId || (state.connections[0] && state.connections[0].id);
-      }
+      // }
       if (state.editingConnectionId && !state.connections.some((c) => c.id === state.editingConnectionId)) {
         state.editingConnectionId = state.activeConnectionId || state.connections[0]?.id || null;
       }
