@@ -646,79 +646,124 @@
   /** Serializes banner prompts so two triggered in the same page load queue instead of clobbering each other's DOM node */
   let bannerChain = Promise.resolve();
 
+  const BANNER_THROTTLE_STORAGE_KEY = "formautoBannerThrottle";
+  const BANNER_THROTTLE_MS = 60 * 60 * 1000; // Don't re-prompt the same banner kind on the same site within an hour
+  const BANNER_THROTTLE_PRUNE_MS = 7 * 24 * 60 * 60 * 1000; // Forget sites idle longer than a week, to bound storage growth
+
+  /** True if `throttleKey` was already shown on this hostname within the last hour. */
+  async function isBannerThrottled(throttleKey) {
+    if (!PAGE_SITE) return false; // No hostname to key on (e.g. file://) -- never throttle
+    try {
+      const data = await chrome.storage.local.get(BANNER_THROTTLE_STORAGE_KEY);
+      const last = ((data[BANNER_THROTTLE_STORAGE_KEY] || {})[PAGE_SITE] || {})[throttleKey];
+      return typeof last === "number" && Date.now() - last < BANNER_THROTTLE_MS;
+    } catch {
+      return false; // Best-effort -- never block a banner because storage failed
+    }
+  }
+
+  /** Record that `throttleKey` was just shown on this hostname, and prune long-idle hostnames. */
+  async function recordBannerShown(throttleKey) {
+    if (!PAGE_SITE) return;
+    try {
+      const data = await chrome.storage.local.get(BANNER_THROTTLE_STORAGE_KEY);
+      const all = data[BANNER_THROTTLE_STORAGE_KEY] || {};
+      const now = Date.now();
+      const bucket = all[PAGE_SITE] || {};
+      bucket[throttleKey] = now;
+      all[PAGE_SITE] = bucket;
+      for (const host of Object.keys(all)) {
+        if (Object.values(all[host]).every((t) => now - t > BANNER_THROTTLE_PRUNE_MS)) delete all[host];
+      }
+      await chrome.storage.local.set({ [BANNER_THROTTLE_STORAGE_KEY]: all });
+    } catch {
+      // Best-effort -- a failed write just means this run isn't remembered
+    }
+  }
+
   /**
-   * Show a floating confirmation banner at the top of the page with a
+   * Show a small confirmation card in the middle of the page with a
    * confirm/dismiss button pair. Returns a promise that resolves to
-   * `true` (confirmed) or `false` (dismissed/timeout).
+   * `true` (confirmed) or `false` (dismissed/timed out/throttled).
+   * When `throttleKey` is given, the card is skipped entirely (resolving
+   * `false` without showing anything) if it was already shown for this
+   * same hostname within the last hour -- this is what stops a dismissed
+   * banner from reappearing on every reload.
    */
-  function showConfirmationBanner({ message, confirmLabel, dismissLabel }) {
-    const run = () => new Promise((resolve) => {
-      // Remove any existing banner
-      const existing = document.getElementById("__ff_confirm_banner");
-      if (existing) existing.remove();
+  function showConfirmationBanner({ message, confirmLabel, dismissLabel, throttleKey }) {
+    const run = async () => {
+      if (throttleKey && (await isBannerThrottled(throttleKey))) return false;
+      if (throttleKey) await recordBannerShown(throttleKey);
 
-      const banner = document.createElement("div");
-      banner.id = "__ff_confirm_banner";
-      banner.style.cssText = [
-        "position:fixed","top:0","left:0","right:0","z-index:2147483647",
-        "background:#1e293b","color:#f8fafc","padding:10px 16px",
-        "display:flex","align-items:center","justify-content:center","gap:12px",
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
-        "font-size:13px","box-shadow:0 2px 12px rgba(0,0,0,0.25)",
-        "animation:__ff_slideDown 0.2s ease"
-      ].join(";");
+      return new Promise((resolve) => {
+        // Remove any existing banner
+        const existing = document.getElementById("__ff_confirm_banner");
+        if (existing) existing.remove();
 
-      const style = document.createElement("style");
-      style.textContent = "@keyframes __ff_slideDown{from{transform:translateY(-100%)}to{transform:translateY(0)}}";
-      banner.appendChild(style);
+        const card = document.createElement("div");
+        card.id = "__ff_confirm_banner";
+        card.style.cssText = [
+          "position:fixed", "top:50%", "left:50%", "transform:translate(-50%,-50%)",
+          "z-index:2147483647", "max-width:320px", "width:calc(100vw - 32px)",
+          "background:#1e293b", "color:#f8fafc", "padding:16px",
+          "border-radius:12px", "box-shadow:0 8px 30px rgba(0,0,0,0.4)",
+          "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+          "font-size:13px", "display:flex", "flex-direction:column", "gap:12px"
+        ].join(";");
 
-      const msg = document.createElement("span");
-      msg.textContent = message;
-      banner.appendChild(msg);
+        const msg = document.createElement("div");
+        msg.textContent = message;
+        card.appendChild(msg);
 
-      let settled = false;
-      const settle = (result) => {
-        if (settled) return;
-        settled = true;
-        banner.remove();
-        resolve(result);
-      };
+        let settled = false;
+        const settle = (result) => {
+          if (settled) return;
+          settled = true;
+          card.remove();
+          resolve(result);
+        };
 
-      const confirmBtn = document.createElement("button");
-      confirmBtn.textContent = confirmLabel;
-      confirmBtn.style.cssText = "background:#22c55e;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;font-weight:600;";
-      confirmBtn.addEventListener("click", () => settle(true));
+        const btnRow = document.createElement("div");
+        btnRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end;";
 
-      const dismissBtn = document.createElement("button");
-      dismissBtn.textContent = dismissLabel;
-      dismissBtn.style.cssText = "background:#64748b;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;";
-      dismissBtn.addEventListener("click", () => settle(false));
+        const dismissBtn = document.createElement("button");
+        dismissBtn.textContent = dismissLabel;
+        dismissBtn.style.cssText = "background:#64748b;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;";
+        dismissBtn.addEventListener("click", () => settle(false));
 
-      banner.appendChild(confirmBtn);
-      banner.appendChild(dismissBtn);
-      document.documentElement.appendChild(banner);
+        const confirmBtn = document.createElement("button");
+        confirmBtn.textContent = confirmLabel;
+        confirmBtn.style.cssText = "background:#22c55e;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px;font-weight:600;";
+        confirmBtn.addEventListener("click", () => settle(true));
 
-      // Auto-dismiss after 30 seconds
-      setTimeout(() => settle(false), 30000);
-    });
+        btnRow.append(dismissBtn, confirmBtn);
+        card.appendChild(btnRow);
+        document.documentElement.appendChild(card);
+
+        // Auto-dismiss after 30 seconds
+        setTimeout(() => settle(false), 30000);
+      });
+    };
     const next = bannerChain.then(run, run);
     bannerChain = next.catch(() => {});
     return next;
   }
 
-  /** Ask the user to confirm before autofill proceeds. */
+  /** Ask the user to confirm before autofill proceeds. At most once per hour per site. */
   function showAutofillConfirmation(count) {
     return showConfirmationBanner({
       message: `autoForm found ${count} matching field${count === 1 ? "" : "s"}. Autofill now?`,
+      throttleKey: "autofill",
       confirmLabel: "\u2713 Fill",
       dismissLabel: "\u2715 Dismiss"
     });
   }
 
-  /** Ask the user to confirm before saving answers on a detected relevant form. */
+  /** Ask the user to confirm before saving answers on a detected relevant form. At most once per hour per site. */
   function showSaveConfirmation() {
     return showConfirmationBanner({
       message: "autoForm detected a form relevant to your profile. Start saving your answers?",
+      throttleKey: "save",
       confirmLabel: "\u2713 Save",
       dismissLabel: "\u2715 Not now"
     });
