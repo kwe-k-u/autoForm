@@ -863,7 +863,7 @@ async function firebaseAuthSignIn(provider) {
   console.log("running");
   try {
     console.log("were",provider);
-    const res = await chrome.runtime.sendMessage({ type: "firebase-auth", target: "offscreen", provider });
+    const res = await chrome.runtime.sendMessage({ type: "firebaseAuthSignIn", target: "offscreen", provider });
     console.log("loggin res",res);
     if (!res || res.error) {
       throw new Error((res && res.error && res.error.message) || "Sign-in failed.");
@@ -1008,6 +1008,7 @@ async function handleMessage(msg) {
     }
 
     case "firebaseAuthSignIn":
+      console.log("firebae");
       return firebaseAuthSignIn(msg.provider);
 
     /* ── LLM connection CRUD ── */

@@ -106,7 +106,6 @@
     setStatus("Signing in…");
     try {
       const res = await chrome.runtime.sendMessage({ type: "firebaseAuthSignIn", provider: providerName });
-      console.log("res",res);
       if (!res || !res.ok) throw new Error((res && res.error) || "Sign-in failed.");
       const u = res.data;
       const account = FFAccount.signedInAccount(
@@ -135,15 +134,15 @@
     if (!configured) {
       $("notConfigured").classList.remove("hidden");
       $("googleBtn").disabled = true;
-      $("appleBtn").disabled = true;
+      // $("appleBtn").disabled = true;
     }
 
     if (!configured) {
       $("googleBtn").addEventListener("click", () => setStatus("Sign-in isn't configured.", true));
-      $("appleBtn").addEventListener("click", () => setStatus("Sign-in isn't configured.", true));
+      // $("appleBtn").addEventListener("click", () => setStatus("Sign-in isn't configured.", true));
     } else {
       $("googleBtn").addEventListener("click", () => signIn("google"));
-      $("appleBtn").addEventListener("click", () => signIn("apple"));
+      // $("appleBtn").addEventListener("click", () => signIn("apple"));
     }
 
     // "Use locally" — creates a local (non-signed-in) account object
