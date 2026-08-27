@@ -29,7 +29,8 @@
     expandedSites: new Set(),   // Which site cards are expanded in sites view
     account: null,              // Current account data from background
     autoSaveDetection: false,   // Whether LLM auto-detect forms is enabled
-    formDetectionMode: "manual" // "manual" (confirm before saving) or "auto" (save immediately)
+    formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
+    suggestMaxRetries: 3        // Max auto-retries for a malformed "Suggest with AI" response
   };
 
   const PROVIDERS = (typeof FFProviders !== "undefined" && FFProviders.PRESETS) || {};
@@ -96,6 +97,7 @@
       state.activeConnectionId = res.data.activeConnectionId;
       state.autoSaveDetection = res.data.autoSaveDetection === true;
       state.formDetectionMode = res.data.formDetectionMode === "auto" ? "auto" : "manual";
+      state.suggestMaxRetries = Number.isFinite(res.data.suggestMaxRetries) ? res.data.suggestMaxRetries : 3;
       // if (!state.editingConnectionId) {
         state.editingConnectionId = state.activeConnectionId || (state.connections[0] && state.connections[0].id);
       // }
@@ -316,6 +318,23 @@
     document.querySelectorAll("[data-form-mode]").forEach((b) => {
       b.classList.toggle("active", b.dataset.formMode === state.formDetectionMode);
     });
+  }
+
+  // "Suggest with AI" max-retries setting
+  $("suggestMaxRetries").addEventListener("change", async (e) => {
+    const value = Math.min(10, Math.max(1, Math.round(Number(e.target.value)) || 3));
+    e.target.value = value;
+    const res = await sendMsg({ type: "setSuggestMaxRetries", value });
+    if (res.ok) {
+      state.suggestMaxRetries = res.data.suggestMaxRetries;
+    } else {
+      alert(res.error);
+      e.target.value = state.suggestMaxRetries;
+    }
+  });
+
+  function renderSuggestMaxRetries() {
+    $("suggestMaxRetries").value = state.suggestMaxRetries;
   }
 
   /* ── Answers view ── */
@@ -887,12 +906,24 @@
     await refreshAI();
   });
 
-  // Send a test "Say OK" prompt to verify the active LLM connection
+  // Send a test "Say OK" prompt to verify the connection currently in the
+  // form — including a freshly-pasted API key that hasn't been saved yet.
   $("testLLMBtn").addEventListener("click", async () => {
     const btn = $("testLLMBtn");
     btn.disabled = true;
     setStatus($("aiStatus"), "Testing…");
-    const res = await sendMsg({ type: "testLLM" });
+    const f = $("aiForm");
+    const connection = {
+      name: f.name.value,
+      provider: f.provider.value,
+      baseUrl: f.baseUrl.value,
+      model: f.model.value,
+      temperature: Number(f.temperature.value),
+      maxTokens: Number(f.maxTokens.value)
+    };
+    // Blank means "use the already-saved key for this connection"
+    if (f.apiKey.value) connection.apiKey = f.apiKey.value;
+    const res = await sendMsg({ type: "testLLM", connection });
     setStatus(
       $("aiStatus"),
       res.ok ? `Connection OK — model replied: ${res.data.reply}` : res.error,
@@ -962,6 +993,7 @@
     renderProfiles();
     renderAutoDetectToggle();
     renderFormModeControl();
+    renderSuggestMaxRetries();
     renderAnswersSelect();
     await loadAnswers();
     renderAnswers();

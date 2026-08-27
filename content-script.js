@@ -38,7 +38,7 @@
   ]);
 
   /* ── Shared mutable state ── */
-  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, formDetectionMode: "manual", activeProfileId: null };
+  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, formDetectionMode: "manual", activeProfileId: null, suggestMaxRetries: 3 };
 
   /** Hostname of the current page, stored with every saved answer */
   const PAGE_SITE = location.hostname || null;
@@ -99,6 +99,7 @@
       state.autoSaveDetection = r.data.autoSaveDetection === true;
       state.formDetectionMode = r.data.formDetectionMode === "auto" ? "auto" : "manual";
       state.activeProfileId = r.data.activeProfileId || null;
+      state.suggestMaxRetries = Number.isFinite(r.data.suggestMaxRetries) ? r.data.suggestMaxRetries : 3;
     }
   }
 
@@ -317,6 +318,79 @@
   function fieldQuestion(el) {
     const label = getLabel(el);
     if (label) return label;
+    const name = el.getAttribute("name") || el.id;
+    return name ? humanize(name) : null;
+  }
+
+  /* ── LLM-assisted question retrieval (fallback when DOM heuristics fail) ── */
+
+  const FIELD_CONTEXT_MAX_CHARS = 800; // Hard cap so the fallback stays cheap
+  // Attributes worth keeping when trimming a context snippet for the LLM —
+  // everything else (class, style, data-*, event handlers, ...) is noise.
+  const CONTEXT_KEEP_ATTRS = /^(id|for|name|type|placeholder|aria-label|aria-labelledby|value)$/;
+
+  /**
+   * Build a minimal HTML snippet of DOM context around `el`, used only when
+   * `getLabel` finds nothing. Climbs up to 4 ancestor levels (same search
+   * depth as `scanQuestion`) until there's enough surrounding text to
+   * plausibly contain a label, strips scripts/styles and all but a handful
+   * of structurally-useful attributes, and hard-truncates — this is a
+   * fallback path, so it should ship as little of the page as possible.
+   */
+  function buildFieldContext(el) {
+    let container = el.parentElement || el;
+    for (let depth = 0; depth < 4 && container.parentElement; depth++) {
+      if (cleanText(container.textContent).length >= 15) break;
+      container = container.parentElement;
+    }
+    const clone = container.cloneNode(true);
+    clone.querySelectorAll("script, style, svg, noscript, template").forEach((n) => n.remove());
+    clone.querySelectorAll("*").forEach((n) => {
+      for (const attr of Array.from(n.attributes)) {
+        if (!CONTEXT_KEEP_ATTRS.test(attr.name)) n.removeAttribute(attr.name);
+      }
+    });
+    let html = cleanText(clone.outerHTML || "");
+    if (html.length > FIELD_CONTEXT_MAX_CHARS) html = html.slice(0, FIELD_CONTEXT_MAX_CHARS);
+    return html;
+  }
+
+  /**
+   * Ask the background LLM to infer this field's question from a trimmed
+   * snippet of surrounding HTML. Best-effort: returns null on any failure
+   * (no connection configured, network error, LLM declined to guess) so
+   * callers can silently fall back to the humanised name/id.
+   */
+  async function inferQuestionViaLLM(el) {
+    const html = buildFieldContext(el);
+    if (!html) return null;
+    const target = {
+      tag: el.tagName.toLowerCase(),
+      type: fieldType(el),
+      name: el.getAttribute("name") || "",
+      id: el.id || "",
+      placeholder: el.getAttribute("placeholder") || ""
+    };
+    try {
+      const res = await sendMsg({ type: "inferFieldQuestion", html, target });
+      return (res.ok && res.data && res.data.question) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve the best-guess question text for a field, escalating from DOM
+   * heuristics (`getLabel`) to an LLM page-parse only when those heuristics
+   * come up empty, and finally to a humanised name/id if the LLM can't tell
+   * either. Async — only used on the explicit "Suggest with AI" paths where
+   * an LLM round-trip is already expected.
+   */
+  async function resolveQuestion(el) {
+    const label = getLabel(el);
+    if (label) return label;
+    const inferred = await inferQuestionViaLLM(el);
+    if (inferred) return inferred;
     const name = el.getAttribute("name") || el.id;
     return name ? humanize(name) : null;
   }
@@ -862,10 +936,15 @@
 
   /**
    * Show a small "thinking" indicator anchored next to `el` while an LLM
-   * suggestion is being requested for it. Returns `{ anchor, dismiss() }` --
-   * call `dismiss()` if no preview will follow (error/no suggestion), or
-   * hand `anchor` to `showFieldPreview` to reuse the same highlight/scroll
-   * position instead of restarting them.
+   * suggestion is being requested for it. Returns `{ anchor, dismiss(),
+   * setText(text, isError), cancelled, onCancel(fn) }`:
+   *   - call `dismiss()` if no preview will follow (error/no suggestion), or
+   *     hand `anchor` to `showFieldPreview` to reuse the same highlight/scroll
+   *     position instead of restarting them.
+   *   - `setText` updates the status line in place, e.g. to report a failed
+   *     retry attempt without tearing down and re-anchoring the box.
+   *   - the Cancel button sets `cancelled` and fires `onCancel` so a caller
+   *     mid-retry-loop (see `suggestAnswerWithRetry`) can stop early.
    */
   function showFieldLoading(el) {
     const anchor = createFieldAnchor(el);
@@ -874,27 +953,47 @@
     box.id = FIELD_LOADING_ID;
     box.style.cssText = [
       "position:fixed", "top:-9999px", "left:-9999px", "visibility:hidden",
-      "z-index:2147483647", "display:flex", "align-items:center", "gap:8px",
+      "z-index:2147483647", "display:flex", "flex-direction:column", "gap:6px",
       "background:#1e293b", "color:#f8fafc", "padding:10px 14px",
       "border-radius:10px", "box-shadow:0 4px 20px rgba(0,0,0,0.35)",
       "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
-      "font-size:13px"
+      "font-size:13px", "max-width:280px"
     ].join(";");
 
     const spinStyle = document.createElement("style");
     spinStyle.textContent = "@keyframes __ff_spin{to{transform:rotate(360deg)}}";
     box.appendChild(spinStyle);
 
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:8px;";
+
     const spinner = document.createElement("div");
     spinner.style.cssText =
       "width:14px;height:14px;border-radius:50%;flex:none;" +
       "border:2px solid rgba(248,250,252,0.25);border-top-color:#f8fafc;" +
       "animation:__ff_spin 0.7s linear infinite;";
-    box.appendChild(spinner);
+    row.appendChild(spinner);
 
     const text = document.createElement("span");
     text.textContent = "autoForm is thinking...";
-    box.appendChild(text);
+    row.appendChild(text);
+    box.appendChild(row);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText =
+      "align-self:flex-end;background:transparent;color:#94a3b8;border:none;" +
+      "padding:2px 0;cursor:pointer;font-size:12px;text-decoration:underline;";
+    box.appendChild(cancelBtn);
+
+    let cancelled = false;
+    let onCancelCb = null;
+    cancelBtn.addEventListener("click", () => {
+      cancelled = true;
+      cancelBtn.disabled = true;
+      text.textContent = "Cancelling…";
+      if (onCancelCb) onCancelCb();
+    });
 
     anchor.show(box);
 
@@ -902,8 +1001,47 @@
       anchor,
       dismiss() {
         anchor.destroy();
+      },
+      setText(newText, isError) {
+        text.textContent = newText;
+        text.style.color = isError ? "#f87171" : "";
+      },
+      get cancelled() {
+        return cancelled;
+      },
+      onCancel(fn) {
+        onCancelCb = fn;
       }
     };
+  }
+
+  /**
+   * Run `suggestAnswers` for a single field, automatically retrying when the
+   * LLM's response didn't match the expected format (background.js tags
+   * that failure `retryable: true` -- a re-ask often comes back well-formed).
+   * Up to `state.suggestMaxRetries` attempts total (configurable in
+   * Settings). Reports each failed attempt into `loading`'s status line, and
+   * checks `loading.cancelled` before and after every request so a user can
+   * bail out at any point via the loading indicator's Cancel button.
+   */
+  async function suggestAnswerWithRetry(profileId, field, loading) {
+    const maxAttempts = Math.max(1, state.suggestMaxRetries || 3);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (loading.cancelled) return { cancelled: true };
+      const res = await sendMsg({ type: "suggestAnswers", profileId, fields: [field] });
+      if (loading.cancelled) return { cancelled: true };
+
+      const item = res.ok && res.data ? res.data[0] : null;
+      const errMsg = !res.ok ? res.error : (item && item.error) || null;
+      if (!errMsg) return { ok: true, item };
+
+      const retryable = !res.ok && res.retryable === true;
+      if (!retryable || attempt === maxAttempts) {
+        return { ok: false, error: errMsg };
+      }
+      loading.setText(`Attempt ${attempt} of ${maxAttempts} failed (${errMsg}) — retrying…`, true);
+    }
+    return { ok: false, error: "Retries exhausted." };
   }
 
   /**
@@ -1119,11 +1257,10 @@
       if (!el.isConnected || !isEligible(el)) continue;
       if (hasExistingValue(el) || isTouched(el)) continue;
 
-      const label = fieldQuestion(el);
-      const labelKey = normalizeKey(label);
+      const question = await resolveQuestion(el);
+      const labelKey = normalizeKey(question);
       const nameKey = normalizeKey(el.getAttribute("name") || el.id);
       const key = labelKey || nameKey;
-      const question = label || humanize(nameKey);
 
       const profileAnswer = matchAnswer(profile, labelKey, nameKey);
       let value;
@@ -1136,13 +1273,17 @@
       } else {
         const loading = showFieldLoading(el);
         loadingAnchor = loading.anchor;
-        const res = await sendMsg({
-          type: "suggestAnswers",
-          profileId: state.activeProfileId,
-          fields: [{ key, question, fieldType: fieldType(el), options: optionsFor(el) }]
-        });
-        const item = res.ok && res.data ? res.data[0] : null;
-        const errMsg = !res.ok ? res.error : (item && item.error) || null;
+        const outcome = await suggestAnswerWithRetry(
+          state.activeProfileId,
+          { key, question, fieldType: fieldType(el), options: optionsFor(el) },
+          loading
+        );
+        if (outcome.cancelled) {
+          loading.dismiss();
+          break; // user hit Cancel on the loading indicator — stop the whole run
+        }
+        const item = outcome.ok ? outcome.item : null;
+        const errMsg = outcome.ok ? null : outcome.error;
         if (errMsg) {
           loading.dismiss();
           // No connection / broken LLM before anything was shown — fail fast with one clear error
@@ -1212,11 +1353,10 @@
     const profile = await getProfile(state.activeProfileId);
     if (!profile) return { ok: false, error: "Active profile could not be loaded." };
 
-    const label = fieldQuestion(el);
-    const labelKey = normalizeKey(label);
+    const question = await resolveQuestion(el);
+    const labelKey = normalizeKey(question);
     const nameKey = normalizeKey(el.getAttribute("name") || el.id);
     const key = labelKey || nameKey;
-    const question = label || humanize(nameKey);
 
     let value;
     let source;
@@ -1233,13 +1373,17 @@
     } else {
       const loading = showFieldLoading(el);
       loadingAnchor = loading.anchor;
-      const res = await sendMsg({
-        type: "suggestAnswers",
-        profileId: state.activeProfileId,
-        fields: [{ key, question, fieldType: fieldType(el), options: optionsFor(el) }]
-      });
-      const item = res.ok && res.data ? res.data[0] : null;
-      const errMsg = !res.ok ? res.error : (item && item.error) || null;
+      const outcome = await suggestAnswerWithRetry(
+        state.activeProfileId,
+        { key, question, fieldType: fieldType(el), options: optionsFor(el) },
+        loading
+      );
+      if (outcome.cancelled) {
+        loading.dismiss();
+        return { ok: false, error: "Cancelled." };
+      }
+      const item = outcome.ok ? outcome.item : null;
+      const errMsg = outcome.ok ? null : outcome.error;
       if (errMsg) {
         loading.dismiss();
         showFieldMessage(el, errMsg, true);

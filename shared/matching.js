@@ -26,9 +26,19 @@
       .replace(/\s+/g, "_");
   }
 
-  /** Trim trailing colons/whitespace and collapse internal whitespace */
+  // Zero-width/invisible formatting characters (ZWSP, ZWNJ, ZWJ, BOM, soft
+  // hyphen) that sites use as CSS layout spacers. They aren't matched by
+  // \s, so left alone they make an otherwise-empty decorative node look
+  // like real label text to callers that just check truthiness/length.
+  var INVISIBLE_CHARS = /[\u200B-\u200D\uFEFF\u00AD]/g;
+
+  /** Strip invisible formatting chars, trim trailing colons/whitespace, collapse internal whitespace */
   function cleanText(s) {
-    return String(s || "").replace(/[:\s]+$/g, "").replace(/\s+/g, " ").trim();
+    return String(s || "")
+      .replace(INVISIBLE_CHARS, "")
+      .replace(/[:\s]+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   /** Convert camelCase / snake_case / kebab-case to human-readable sentence case */
