@@ -38,7 +38,7 @@
   ]);
 
   /* ── Shared mutable state ── */
-  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, formDetectionMode: "manual", activeProfileId: null };
+  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, formDetectionMode: "manual", activeProfileId: null, suggestMaxRetries: 3 };
 
   /** Hostname of the current page, stored with every saved answer */
   const PAGE_SITE = location.hostname || null;
@@ -99,6 +99,7 @@
       state.autoSaveDetection = r.data.autoSaveDetection === true;
       state.formDetectionMode = r.data.formDetectionMode === "auto" ? "auto" : "manual";
       state.activeProfileId = r.data.activeProfileId || null;
+      state.suggestMaxRetries = Number.isFinite(r.data.suggestMaxRetries) ? r.data.suggestMaxRetries : 3;
     }
   }
 
@@ -935,10 +936,15 @@
 
   /**
    * Show a small "thinking" indicator anchored next to `el` while an LLM
-   * suggestion is being requested for it. Returns `{ anchor, dismiss() }` --
-   * call `dismiss()` if no preview will follow (error/no suggestion), or
-   * hand `anchor` to `showFieldPreview` to reuse the same highlight/scroll
-   * position instead of restarting them.
+   * suggestion is being requested for it. Returns `{ anchor, dismiss(),
+   * setText(text, isError), cancelled, onCancel(fn) }`:
+   *   - call `dismiss()` if no preview will follow (error/no suggestion), or
+   *     hand `anchor` to `showFieldPreview` to reuse the same highlight/scroll
+   *     position instead of restarting them.
+   *   - `setText` updates the status line in place, e.g. to report a failed
+   *     retry attempt without tearing down and re-anchoring the box.
+   *   - the Cancel button sets `cancelled` and fires `onCancel` so a caller
+   *     mid-retry-loop (see `suggestAnswerWithRetry`) can stop early.
    */
   function showFieldLoading(el) {
     const anchor = createFieldAnchor(el);
@@ -947,27 +953,47 @@
     box.id = FIELD_LOADING_ID;
     box.style.cssText = [
       "position:fixed", "top:-9999px", "left:-9999px", "visibility:hidden",
-      "z-index:2147483647", "display:flex", "align-items:center", "gap:8px",
+      "z-index:2147483647", "display:flex", "flex-direction:column", "gap:6px",
       "background:#1e293b", "color:#f8fafc", "padding:10px 14px",
       "border-radius:10px", "box-shadow:0 4px 20px rgba(0,0,0,0.35)",
       "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
-      "font-size:13px"
+      "font-size:13px", "max-width:280px"
     ].join(";");
 
     const spinStyle = document.createElement("style");
     spinStyle.textContent = "@keyframes __ff_spin{to{transform:rotate(360deg)}}";
     box.appendChild(spinStyle);
 
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:8px;";
+
     const spinner = document.createElement("div");
     spinner.style.cssText =
       "width:14px;height:14px;border-radius:50%;flex:none;" +
       "border:2px solid rgba(248,250,252,0.25);border-top-color:#f8fafc;" +
       "animation:__ff_spin 0.7s linear infinite;";
-    box.appendChild(spinner);
+    row.appendChild(spinner);
 
     const text = document.createElement("span");
     text.textContent = "autoForm is thinking...";
-    box.appendChild(text);
+    row.appendChild(text);
+    box.appendChild(row);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText =
+      "align-self:flex-end;background:transparent;color:#94a3b8;border:none;" +
+      "padding:2px 0;cursor:pointer;font-size:12px;text-decoration:underline;";
+    box.appendChild(cancelBtn);
+
+    let cancelled = false;
+    let onCancelCb = null;
+    cancelBtn.addEventListener("click", () => {
+      cancelled = true;
+      cancelBtn.disabled = true;
+      text.textContent = "Cancelling…";
+      if (onCancelCb) onCancelCb();
+    });
 
     anchor.show(box);
 
@@ -975,8 +1001,47 @@
       anchor,
       dismiss() {
         anchor.destroy();
+      },
+      setText(newText, isError) {
+        text.textContent = newText;
+        text.style.color = isError ? "#f87171" : "";
+      },
+      get cancelled() {
+        return cancelled;
+      },
+      onCancel(fn) {
+        onCancelCb = fn;
       }
     };
+  }
+
+  /**
+   * Run `suggestAnswers` for a single field, automatically retrying when the
+   * LLM's response didn't match the expected format (background.js tags
+   * that failure `retryable: true` -- a re-ask often comes back well-formed).
+   * Up to `state.suggestMaxRetries` attempts total (configurable in
+   * Settings). Reports each failed attempt into `loading`'s status line, and
+   * checks `loading.cancelled` before and after every request so a user can
+   * bail out at any point via the loading indicator's Cancel button.
+   */
+  async function suggestAnswerWithRetry(profileId, field, loading) {
+    const maxAttempts = Math.max(1, state.suggestMaxRetries || 3);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (loading.cancelled) return { cancelled: true };
+      const res = await sendMsg({ type: "suggestAnswers", profileId, fields: [field] });
+      if (loading.cancelled) return { cancelled: true };
+
+      const item = res.ok && res.data ? res.data[0] : null;
+      const errMsg = !res.ok ? res.error : (item && item.error) || null;
+      if (!errMsg) return { ok: true, item };
+
+      const retryable = !res.ok && res.retryable === true;
+      if (!retryable || attempt === maxAttempts) {
+        return { ok: false, error: errMsg };
+      }
+      loading.setText(`Attempt ${attempt} of ${maxAttempts} failed (${errMsg}) — retrying…`, true);
+    }
+    return { ok: false, error: "Retries exhausted." };
   }
 
   /**
@@ -1208,13 +1273,17 @@
       } else {
         const loading = showFieldLoading(el);
         loadingAnchor = loading.anchor;
-        const res = await sendMsg({
-          type: "suggestAnswers",
-          profileId: state.activeProfileId,
-          fields: [{ key, question, fieldType: fieldType(el), options: optionsFor(el) }]
-        });
-        const item = res.ok && res.data ? res.data[0] : null;
-        const errMsg = !res.ok ? res.error : (item && item.error) || null;
+        const outcome = await suggestAnswerWithRetry(
+          state.activeProfileId,
+          { key, question, fieldType: fieldType(el), options: optionsFor(el) },
+          loading
+        );
+        if (outcome.cancelled) {
+          loading.dismiss();
+          break; // user hit Cancel on the loading indicator — stop the whole run
+        }
+        const item = outcome.ok ? outcome.item : null;
+        const errMsg = outcome.ok ? null : outcome.error;
         if (errMsg) {
           loading.dismiss();
           // No connection / broken LLM before anything was shown — fail fast with one clear error
@@ -1304,13 +1373,17 @@
     } else {
       const loading = showFieldLoading(el);
       loadingAnchor = loading.anchor;
-      const res = await sendMsg({
-        type: "suggestAnswers",
-        profileId: state.activeProfileId,
-        fields: [{ key, question, fieldType: fieldType(el), options: optionsFor(el) }]
-      });
-      const item = res.ok && res.data ? res.data[0] : null;
-      const errMsg = !res.ok ? res.error : (item && item.error) || null;
+      const outcome = await suggestAnswerWithRetry(
+        state.activeProfileId,
+        { key, question, fieldType: fieldType(el), options: optionsFor(el) },
+        loading
+      );
+      if (outcome.cancelled) {
+        loading.dismiss();
+        return { ok: false, error: "Cancelled." };
+      }
+      const item = outcome.ok ? outcome.item : null;
+      const errMsg = outcome.ok ? null : outcome.error;
       if (errMsg) {
         loading.dismiss();
         showFieldMessage(el, errMsg, true);

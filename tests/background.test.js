@@ -376,6 +376,95 @@ describe("inferFieldQuestion (LLM fallback question retrieval)", () => {
   });
 });
 
+describe("suggestMaxRetries setting (Suggest with AI retry count)", () => {
+  test("defaults to 3 when never set", async () => {
+    await background.persistState(background.defaultState());
+    const got = await background.handleMessage({ type: "getState" });
+    expect(got.suggestMaxRetries).toBe(3);
+  });
+
+  test("setSuggestMaxRetries persists and clamps to [1, 10]", async () => {
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: 5 });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(5);
+
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: 99 });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(10);
+
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: 0 });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(1);
+
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: "not a number" });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(3);
+  });
+});
+
+describe("suggestAnswers marks a malformed LLM response as retryable", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  test("throws with retryable:true when the batch reply isn't valid JSON (regression: retry-on-bad-format)", async () => {
+    await seedProfile("retry-profile");
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "sorry, I can't help with that" } }] })
+    }));
+
+    let caught;
+    try {
+      await background.handleMessage({
+        type: "suggestAnswers",
+        profileId: "retry-profile",
+        fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.retryable).toBe(true);
+  });
+
+  test("a well-formed retry succeeds after a malformed first attempt", async () => {
+    await seedProfile("retry-profile-2");
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    const responses = [
+      { ok: true, json: async () => ({ choices: [{ message: { content: "not json" } }] }) },
+      {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '{"field_0":"Jane Doe"}' } }] })
+      }
+    ];
+    global.fetch = jest.fn(async () => responses.shift());
+
+    await expect(
+      background.handleMessage({
+        type: "suggestAnswers",
+        profileId: "retry-profile-2",
+        fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+      })
+    ).rejects.toThrow();
+
+    const result = await background.handleMessage({
+      type: "suggestAnswers",
+      profileId: "retry-profile-2",
+      fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+    });
+    expect(result[0].suggested).toBe("Jane Doe");
+  });
+});
+
 describe("scoreProfileRelevance", () => {
   const profile = {
     id: "p1",

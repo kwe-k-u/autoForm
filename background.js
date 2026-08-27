@@ -112,8 +112,15 @@ function defaultState() {
     autoSaveDetection: false,  // Use LLM to auto-detect forms and enable saving per page
     formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
     connections: [],           // Array of LLM connection objects
-    activeConnectionId: null   // Currently selected LLM connection
+    activeConnectionId: null,  // Currently selected LLM connection
+    suggestMaxRetries: 3       // "Suggest with AI" retries on a malformed LLM response
   };
+}
+
+/** Clamp a "Suggest with AI" max-retries value to a sane [1, 10] range */
+function clampMaxRetries(value) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.min(10, Math.max(1, n)) : 3;
 }
 
 /* ── State migrations ── */
@@ -598,7 +605,13 @@ async function suggestAnswers(profileId, fields) {
     const end = cleaned.lastIndexOf("}");
     parsed = JSON.parse(cleaned.slice(start, end + 1));
   } catch {
-    throw new Error("LLM returned an unparseable response");
+    // The LLM's reply didn't conform to the JSON shape we asked for --
+    // callers (content-script's "Suggest with AI" flow) retry this same
+    // request up to the configured max-retries when they see `retryable`,
+    // since a re-ask often comes back well-formed.
+    const err = new Error("The AI's response didn't match the expected format.");
+    err.retryable = true;
+    throw err;
   }
 
   return fields.map((f, i) => {
@@ -945,6 +958,7 @@ async function handleMessage(msg) {
         autoSaveTyping: state.autoSaveTyping !== false,
         autoSaveDetection: state.autoSaveDetection === true,
         formDetectionMode: state.formDetectionMode === "auto" ? "auto" : "manual",
+        suggestMaxRetries: clampMaxRetries(state.suggestMaxRetries),
         profiles: Object.values(state.profiles).map(profileSummary),
         connections: state.connections.map(connectionSummary),
         activeConnectionId: state.activeConnectionId
@@ -977,6 +991,13 @@ async function handleMessage(msg) {
       state.formDetectionMode = msg.mode === "auto" ? "auto" : "manual";
       await setState(state);
       return { ok: true };
+    }
+
+    case "setSuggestMaxRetries": {
+      const state = await getState();
+      state.suggestMaxRetries = clampMaxRetries(msg.value);
+      await setState(state);
+      return { ok: true, suggestMaxRetries: state.suggestMaxRetries };
     }
 
     case "detectFormPage": {
@@ -1167,7 +1188,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.target === "offscreen") return false;
   handleMessage(msg)
     .then((result) => sendResponse({ ok: true, data: result }))
-    .catch((err) => sendResponse({ ok: false, error: err.message }));
+    .catch((err) => sendResponse({ ok: false, error: err.message, retryable: err.retryable === true }));
   return true;
 });
 

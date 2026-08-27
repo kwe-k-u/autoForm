@@ -88,6 +88,19 @@
           OpenAI, OpenRouter, Groq, Google Gemini, Ollama (<code>http://localhost:11434/v1</code>),
           LM Studio, and more.
         </p>
+        <div class="card" style="max-width:100%;margin-bottom:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div>
+              <strong>Suggest with AI retries</strong>
+              <p class="hint" style="margin-bottom:0;">
+                If the AI's reply doesn't come back in the expected format, automatically retry
+                before giving up on a field. Each retry is shown in the "Suggest with AI" popup, and
+                you can cancel at any point.
+              </p>
+            </div>
+            <input type="number" id="suggestMaxRetries" min="1" max="10" step="1" style="width:60px;" />
+          </div>
+        </div>
         <form id="aiForm" class="form">
           <div class="form-row">
             <label>
