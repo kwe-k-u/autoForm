@@ -887,12 +887,24 @@
     await refreshAI();
   });
 
-  // Send a test "Say OK" prompt to verify the active LLM connection
+  // Send a test "Say OK" prompt to verify the connection currently in the
+  // form — including a freshly-pasted API key that hasn't been saved yet.
   $("testLLMBtn").addEventListener("click", async () => {
     const btn = $("testLLMBtn");
     btn.disabled = true;
     setStatus($("aiStatus"), "Testing…");
-    const res = await sendMsg({ type: "testLLM" });
+    const f = $("aiForm");
+    const connection = {
+      name: f.name.value,
+      provider: f.provider.value,
+      baseUrl: f.baseUrl.value,
+      model: f.model.value,
+      temperature: Number(f.temperature.value),
+      maxTokens: Number(f.maxTokens.value)
+    };
+    // Blank means "use the already-saved key for this connection"
+    if (f.apiKey.value) connection.apiKey = f.apiKey.value;
+    const res = await sendMsg({ type: "testLLM", connection });
     setStatus(
       $("aiStatus"),
       res.ok ? `Connection OK — model replied: ${res.data.reply}` : res.error,

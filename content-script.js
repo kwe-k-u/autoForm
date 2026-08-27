@@ -321,6 +321,79 @@
     return name ? humanize(name) : null;
   }
 
+  /* ── LLM-assisted question retrieval (fallback when DOM heuristics fail) ── */
+
+  const FIELD_CONTEXT_MAX_CHARS = 800; // Hard cap so the fallback stays cheap
+  // Attributes worth keeping when trimming a context snippet for the LLM —
+  // everything else (class, style, data-*, event handlers, ...) is noise.
+  const CONTEXT_KEEP_ATTRS = /^(id|for|name|type|placeholder|aria-label|aria-labelledby|value)$/;
+
+  /**
+   * Build a minimal HTML snippet of DOM context around `el`, used only when
+   * `getLabel` finds nothing. Climbs up to 4 ancestor levels (same search
+   * depth as `scanQuestion`) until there's enough surrounding text to
+   * plausibly contain a label, strips scripts/styles and all but a handful
+   * of structurally-useful attributes, and hard-truncates — this is a
+   * fallback path, so it should ship as little of the page as possible.
+   */
+  function buildFieldContext(el) {
+    let container = el.parentElement || el;
+    for (let depth = 0; depth < 4 && container.parentElement; depth++) {
+      if (cleanText(container.textContent).length >= 15) break;
+      container = container.parentElement;
+    }
+    const clone = container.cloneNode(true);
+    clone.querySelectorAll("script, style, svg, noscript, template").forEach((n) => n.remove());
+    clone.querySelectorAll("*").forEach((n) => {
+      for (const attr of Array.from(n.attributes)) {
+        if (!CONTEXT_KEEP_ATTRS.test(attr.name)) n.removeAttribute(attr.name);
+      }
+    });
+    let html = cleanText(clone.outerHTML || "");
+    if (html.length > FIELD_CONTEXT_MAX_CHARS) html = html.slice(0, FIELD_CONTEXT_MAX_CHARS);
+    return html;
+  }
+
+  /**
+   * Ask the background LLM to infer this field's question from a trimmed
+   * snippet of surrounding HTML. Best-effort: returns null on any failure
+   * (no connection configured, network error, LLM declined to guess) so
+   * callers can silently fall back to the humanised name/id.
+   */
+  async function inferQuestionViaLLM(el) {
+    const html = buildFieldContext(el);
+    if (!html) return null;
+    const target = {
+      tag: el.tagName.toLowerCase(),
+      type: fieldType(el),
+      name: el.getAttribute("name") || "",
+      id: el.id || "",
+      placeholder: el.getAttribute("placeholder") || ""
+    };
+    try {
+      const res = await sendMsg({ type: "inferFieldQuestion", html, target });
+      return (res.ok && res.data && res.data.question) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve the best-guess question text for a field, escalating from DOM
+   * heuristics (`getLabel`) to an LLM page-parse only when those heuristics
+   * come up empty, and finally to a humanised name/id if the LLM can't tell
+   * either. Async — only used on the explicit "Suggest with AI" paths where
+   * an LLM round-trip is already expected.
+   */
+  async function resolveQuestion(el) {
+    const label = getLabel(el);
+    if (label) return label;
+    const inferred = await inferQuestionViaLLM(el);
+    if (inferred) return inferred;
+    const name = el.getAttribute("name") || el.id;
+    return name ? humanize(name) : null;
+  }
+
   /** Build a normalised lookup key from the field's label or name/id */
   function fieldKey(el) {
     const question = getLabel(el);
@@ -1119,11 +1192,10 @@
       if (!el.isConnected || !isEligible(el)) continue;
       if (hasExistingValue(el) || isTouched(el)) continue;
 
-      const label = fieldQuestion(el);
-      const labelKey = normalizeKey(label);
+      const question = await resolveQuestion(el);
+      const labelKey = normalizeKey(question);
       const nameKey = normalizeKey(el.getAttribute("name") || el.id);
       const key = labelKey || nameKey;
-      const question = label || humanize(nameKey);
 
       const profileAnswer = matchAnswer(profile, labelKey, nameKey);
       let value;
@@ -1212,11 +1284,10 @@
     const profile = await getProfile(state.activeProfileId);
     if (!profile) return { ok: false, error: "Active profile could not be loaded." };
 
-    const label = fieldQuestion(el);
-    const labelKey = normalizeKey(label);
+    const question = await resolveQuestion(el);
+    const labelKey = normalizeKey(question);
     const nameKey = normalizeKey(el.getAttribute("name") || el.id);
     const key = labelKey || nameKey;
-    const question = label || humanize(nameKey);
 
     let value;
     let source;
