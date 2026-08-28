@@ -88,6 +88,26 @@
           OpenAI, OpenRouter, Groq, Google Gemini, Ollama (<code>http://localhost:11434/v1</code>),
           LM Studio, and more.
         </p>
+        <div id="aiUsageCard" class="card hidden" style="max-width:100%;margin-bottom:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <strong>AutoForm AI usage today</strong>
+            <span id="aiUsageText" class="hint" style="margin:0;"></span>
+          </div>
+          <progress id="aiUsageBar" max="1" value="0" style="width:100%;margin-top:8px;"></progress>
+        </div>
+        <div class="card" style="max-width:100%;margin-bottom:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div>
+              <strong>Suggest with AI retries</strong>
+              <p class="hint" style="margin-bottom:0;">
+                If the AI's reply doesn't come back in the expected format, automatically retry
+                before giving up on a field. Each retry is shown in the "Suggest with AI" popup, and
+                you can cancel at any point.
+              </p>
+            </div>
+            <input type="number" id="suggestMaxRetries" min="1" max="10" step="1" style="width:60px;" />
+          </div>
+        </div>
         <form id="aiForm" class="form">
           <div class="form-row">
             <label>
@@ -97,6 +117,7 @@
             <label>
               <span>Provider</span>
               <select name="provider">
+                <option value="AutoForm AI">AutoForm AI (built-in, no key needed)</option>
                 <option value="OpenAI">OpenAI</option>
                 <option value="OpenRouter">OpenRouter</option>
                 <option value="Groq">Groq</option>
@@ -107,11 +128,15 @@
               </select>
             </label>
           </div>
-          <label>
+          <p id="autoformAiNote" class="hint hidden">
+            Uses AutoForm's own AI key under your signed-in account — no base URL or API key needed.
+            Free plan includes a daily limit; Pro gets a higher one. <a href="../account/account.html" target="_blank">Sign in</a> if you haven't.
+          </p>
+          <label id="baseUrlField">
             <span>Base URL</span>
             <input type="text" name="baseUrl" placeholder="https://api.openai.com/v1" />
           </label>
-          <label>
+          <label id="apiKeyField">
             <span>API key</span>
             <input type="password" name="apiKey" placeholder="sk-…" autocomplete="off" />
           </label>

@@ -26,6 +26,13 @@ describe("cleanText", () => {
   test("collapses internal whitespace", () => {
     expect(cleanText("First    Name")).toBe("First Name");
   });
+
+  test("strips zero-width spacer characters some sites use for CSS layout (regression: Luma registration forms)", () => {
+    // A bare zero-width space isn't matched by \s, so left alone it makes an
+    // otherwise-empty decorative spacer node look like real label text.
+    expect(cleanText("​")).toBe("");
+    expect(cleanText("​What's your name?​")).toBe("What's your name?");
+  });
 });
 
 describe("humanize", () => {

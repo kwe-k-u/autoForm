@@ -250,6 +250,221 @@ describe("connection CRUD via handleMessage (end-to-end apiKey masking)", () => 
   });
 });
 
+describe("testLLM uses unsaved form values (regression: pasted key ignored until Save)", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  test("a freshly-typed apiKey that was never saved is sent, not rejected as missing", async () => {
+    const created = await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI"
+      // no apiKey — matches newConnBtn's blank connection before the user types a key
+    });
+    let sentAuth;
+    global.fetch = jest.fn(async (url, opts) => {
+      sentAuth = opts.headers.Authorization;
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "OK" } }] }) };
+    });
+
+    const res = await background.handleMessage({
+      type: "testLLM",
+      connection: {
+        name: "OpenAI",
+        provider: "OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini",
+        temperature: 0.3,
+        maxTokens: 256,
+        apiKey: "sk-just-pasted" // typed into the form, never sent via updateConnection
+      }
+    });
+
+    expect(res.ok).toBe(true);
+    expect(sentAuth).toBe("Bearer sk-just-pasted");
+    // still never persisted in plaintext
+    const fetched = await background.handleMessage({ type: "getConnection", connectionId: created.connection.id });
+    expect(fetched.connection.hasApiKey).toBe(false);
+  });
+
+  test("without connection.apiKey in the request, testLLM falls back to the saved key", async () => {
+    const created = await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-already-saved"
+    });
+    let sentAuth;
+    global.fetch = jest.fn(async (url, opts) => {
+      sentAuth = opts.headers.Authorization;
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "OK" } }] }) };
+    });
+
+    await background.handleMessage({ type: "setActiveConnection", connectionId: created.connection.id });
+    const res = await background.handleMessage({
+      type: "testLLM",
+      connection: {
+        name: "OpenAI",
+        provider: "OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini",
+        temperature: 0.3,
+        maxTokens: 256
+        // no apiKey field — form was left blank, meaning "use the saved key"
+      }
+    });
+
+    expect(res.ok).toBe(true);
+    expect(sentAuth).toBe("Bearer sk-already-saved");
+  });
+});
+
+describe("inferFieldQuestion (LLM fallback question retrieval)", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  test("returns null immediately when no HTML snippet was collected", async () => {
+    const result = await background.inferFieldQuestion("", { tag: "input" });
+    expect(result).toEqual({ question: null });
+  });
+
+  test("returns the LLM's guess, trimmed, when a connection is configured", async () => {
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "  What is your phone number?  " } }] })
+    }));
+
+    const result = await background.inferFieldQuestion("<div>Phone</div>", {
+      tag: "input",
+      type: "tel",
+      name: "phone1"
+    });
+    expect(result).toEqual({ question: "What is your phone number?" });
+  });
+
+  test("returns null when the LLM replies UNKNOWN", async () => {
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "UNKNOWN" } }] })
+    }));
+
+    const result = await background.inferFieldQuestion("<div></div>", { tag: "input" });
+    expect(result).toEqual({ question: null });
+  });
+
+  test("fails silently (question: null) when no LLM connection is configured", async () => {
+    // Fresh state with no connections at all
+    await background.persistState(background.defaultState());
+    const result = await background.inferFieldQuestion("<div>x</div>", { tag: "input" });
+    expect(result).toEqual({ question: null });
+  });
+});
+
+describe("suggestMaxRetries setting (Suggest with AI retry count)", () => {
+  test("defaults to 3 when never set", async () => {
+    await background.persistState(background.defaultState());
+    const got = await background.handleMessage({ type: "getState" });
+    expect(got.suggestMaxRetries).toBe(3);
+  });
+
+  test("setSuggestMaxRetries persists and clamps to [1, 10]", async () => {
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: 5 });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(5);
+
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: 99 });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(10);
+
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: 0 });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(1);
+
+    await background.handleMessage({ type: "setSuggestMaxRetries", value: "not a number" });
+    expect((await background.handleMessage({ type: "getState" })).suggestMaxRetries).toBe(3);
+  });
+});
+
+describe("suggestAnswers marks a malformed LLM response as retryable", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  test("throws with retryable:true when the batch reply isn't valid JSON (regression: retry-on-bad-format)", async () => {
+    await seedProfile("retry-profile");
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "sorry, I can't help with that" } }] })
+    }));
+
+    let caught;
+    try {
+      await background.handleMessage({
+        type: "suggestAnswers",
+        profileId: "retry-profile",
+        fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.retryable).toBe(true);
+  });
+
+  test("a well-formed retry succeeds after a malformed first attempt", async () => {
+    await seedProfile("retry-profile-2");
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    const responses = [
+      { ok: true, json: async () => ({ choices: [{ message: { content: "not json" } }] }) },
+      {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '{"field_0":"Jane Doe"}' } }] })
+      }
+    ];
+    global.fetch = jest.fn(async () => responses.shift());
+
+    await expect(
+      background.handleMessage({
+        type: "suggestAnswers",
+        profileId: "retry-profile-2",
+        fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+      })
+    ).rejects.toThrow();
+
+    const result = await background.handleMessage({
+      type: "suggestAnswers",
+      profileId: "retry-profile-2",
+      fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+    });
+    expect(result[0].suggested).toBe("Jane Doe");
+  });
+});
+
 describe("scoreProfileRelevance", () => {
   const profile = {
     id: "p1",

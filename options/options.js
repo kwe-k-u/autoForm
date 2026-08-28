@@ -28,8 +28,10 @@
     answersView: "all",         // "all" (flat table) or "sites" (grouped cards)
     expandedSites: new Set(),   // Which site cards are expanded in sites view
     account: null,              // Current account data from background
+    aiUsage: null,               // Today's AutoForm AI usage ({tier, limit, used, remaining}) or null
     autoSaveDetection: false,   // Whether LLM auto-detect forms is enabled
-    formDetectionMode: "manual" // "manual" (confirm before saving) or "auto" (save immediately)
+    formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
+    suggestMaxRetries: 3        // Max auto-retries for a malformed "Suggest with AI" response
   };
 
   const PROVIDERS = (typeof FFProviders !== "undefined" && FFProviders.PRESETS) || {};
@@ -55,6 +57,11 @@
       f.apiKey.title = "Not required for this provider";
     }
     if (preset.model) f.model.placeholder = preset.model;
+
+    // AutoForm AI is hosted — there's no base URL or API key to configure.
+    $("baseUrlField").classList.toggle("hidden", !!preset.builtin);
+    $("apiKeyField").classList.toggle("hidden", !!preset.builtin);
+    $("autoformAiNote").classList.toggle("hidden", !preset.builtin);
   }
 
   /**
@@ -96,6 +103,7 @@
       state.activeConnectionId = res.data.activeConnectionId;
       state.autoSaveDetection = res.data.autoSaveDetection === true;
       state.formDetectionMode = res.data.formDetectionMode === "auto" ? "auto" : "manual";
+      state.suggestMaxRetries = Number.isFinite(res.data.suggestMaxRetries) ? res.data.suggestMaxRetries : 3;
       // if (!state.editingConnectionId) {
         state.editingConnectionId = state.activeConnectionId || (state.connections[0] && state.connections[0].id);
       // }
@@ -115,6 +123,32 @@
   async function loadAccount() {
     const res = await sendMsg({ type: "getAccount" });
     state.account = res.ok ? res.data : null;
+  }
+
+  /** Load today's AutoForm AI usage (null if signed out, offline, etc.) */
+  async function loadAiUsage() {
+    const res = await sendMsg({ type: "getAiUsage" });
+    state.aiUsage = res.ok ? res.data : null;
+  }
+
+  /**
+   * Render the "AutoForm AI usage today" progress bar. Hidden entirely when
+   * usage isn't available (signed out, or the cloud call failed) — this is
+   * a nice-to-have indicator, not something worth showing an error for.
+   */
+  function renderAiUsage() {
+    const card = $("aiUsageCard");
+    const usage = state.aiUsage;
+    if (!card) return;
+    if (!usage || !Number.isFinite(usage.limit) || usage.limit <= 0) {
+      card.classList.add("hidden");
+      return;
+    }
+    card.classList.remove("hidden");
+    $("aiUsageBar").max = usage.limit;
+    $("aiUsageBar").value = Math.min(usage.used, usage.limit);
+    const tierLabel = usage.tier === "paid" ? "Pro" : "Free";
+    $("aiUsageText").textContent = `${usage.used} / ${usage.limit} (${tierLabel})`;
   }
 
   /* ── Plan banner ── */
@@ -316,6 +350,23 @@
     document.querySelectorAll("[data-form-mode]").forEach((b) => {
       b.classList.toggle("active", b.dataset.formMode === state.formDetectionMode);
     });
+  }
+
+  // "Suggest with AI" max-retries setting
+  $("suggestMaxRetries").addEventListener("change", async (e) => {
+    const value = Math.min(10, Math.max(1, Math.round(Number(e.target.value)) || 3));
+    e.target.value = value;
+    const res = await sendMsg({ type: "setSuggestMaxRetries", value });
+    if (res.ok) {
+      state.suggestMaxRetries = res.data.suggestMaxRetries;
+    } else {
+      alert(res.error);
+      e.target.value = state.suggestMaxRetries;
+    }
+  });
+
+  function renderSuggestMaxRetries() {
+    $("suggestMaxRetries").value = state.suggestMaxRetries;
   }
 
   /* ── Answers view ── */
@@ -887,12 +938,24 @@
     await refreshAI();
   });
 
-  // Send a test "Say OK" prompt to verify the active LLM connection
+  // Send a test "Say OK" prompt to verify the connection currently in the
+  // form — including a freshly-pasted API key that hasn't been saved yet.
   $("testLLMBtn").addEventListener("click", async () => {
     const btn = $("testLLMBtn");
     btn.disabled = true;
     setStatus($("aiStatus"), "Testing…");
-    const res = await sendMsg({ type: "testLLM" });
+    const f = $("aiForm");
+    const connection = {
+      name: f.name.value,
+      provider: f.provider.value,
+      baseUrl: f.baseUrl.value,
+      model: f.model.value,
+      temperature: Number(f.temperature.value),
+      maxTokens: Number(f.maxTokens.value)
+    };
+    // Blank means "use the already-saved key for this connection"
+    if (f.apiKey.value) connection.apiKey = f.apiKey.value;
+    const res = await sendMsg({ type: "testLLM", connection });
     setStatus(
       $("aiStatus"),
       res.ok ? `Connection OK — model replied: ${res.data.reply}` : res.error,
@@ -958,10 +1021,13 @@
   async function refresh() {
     await loadAccount();
     renderPlanBanner();
+    await loadAiUsage();
+    renderAiUsage();
     await loadState();
     renderProfiles();
     renderAutoDetectToggle();
     renderFormModeControl();
+    renderSuggestMaxRetries();
     renderAnswersSelect();
     await loadAnswers();
     renderAnswers();

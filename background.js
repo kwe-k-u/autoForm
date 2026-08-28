@@ -67,6 +67,14 @@ function isLocalProvider(provider) {
   return /^(Ollama|LM Studio)$/.test(String(provider || ""));
 }
 
+/** True for AutoForm's own hosted/built-in provider (see callAutoFormCloudAI) */
+function isAutoFormAIProvider(provider) {
+  if (typeof FFProviders !== "undefined" && FFProviders.isAutoFormAIProvider) {
+    return FFProviders.isAutoFormAIProvider(provider);
+  }
+  return String(provider || "") === "AutoForm AI";
+}
+
 /* ── ID generation ── */
 
 /** Create a prefixed unique ID (e.g. "p_abc123_def456") */
@@ -112,8 +120,15 @@ function defaultState() {
     autoSaveDetection: false,  // Use LLM to auto-detect forms and enable saving per page
     formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
     connections: [],           // Array of LLM connection objects
-    activeConnectionId: null   // Currently selected LLM connection
+    activeConnectionId: null,  // Currently selected LLM connection
+    suggestMaxRetries: 3       // "Suggest with AI" retries on a malformed LLM response
   };
+}
+
+/** Clamp a "Suggest with AI" max-retries value to a sane [1, 10] range */
+function clampMaxRetries(value) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.min(10, Math.max(1, n)) : 3;
 }
 
 /* ── State migrations ── */
@@ -473,14 +488,26 @@ function buildAnswerPrompt(question, fieldType, options) {
  * Send a chat-completion request to the active LLM connection.
  * Handles: URL normalisation, auth headers (skipped for local providers
  * without a key), error parsing, and Ollama 403 guidance.
+ *
+ * `overrideConn`, if given, layers unsaved settings-form values (including a
+ * freshly-typed, not-yet-saved plaintext `apiKey`) on top of the persisted
+ * active connection — used by "Test connection" so it reflects what's
+ * currently in the form rather than requiring Save first.
  */
-async function callLLM(messages) {
+async function callLLM(messages, overrideConn) {
   const state = await getState();
-  const conn = getActiveConnection(state);
-  if (!conn) {
+  const active = getActiveConnection(state);
+  if (!active && !overrideConn) {
     throw new Error("No AI connection configured. Add one in Settings.");
   }
-  const apiKey = await decryptApiKey(conn);
+  const conn = overrideConn ? Object.assign({}, active || {}, overrideConn) : active;
+
+  if (isAutoFormAIProvider(conn.provider)) {
+    return callAutoFormCloudAI(messages, conn);
+  }
+
+  const apiKey =
+    overrideConn && overrideConn.apiKey ? overrideConn.apiKey : await decryptApiKey(active || {});
   if (!apiKey && !isLocalProvider(conn.provider)) {
     throw new Error(`No API key for "${conn.name}". Add it in Settings.`);
   }
@@ -591,7 +618,13 @@ async function suggestAnswers(profileId, fields) {
     const end = cleaned.lastIndexOf("}");
     parsed = JSON.parse(cleaned.slice(start, end + 1));
   } catch {
-    throw new Error("LLM returned an unparseable response");
+    // The LLM's reply didn't conform to the JSON shape we asked for --
+    // callers (content-script's "Suggest with AI" flow) retry this same
+    // request up to the configured max-retries when they see `retryable`,
+    // since a re-ask often comes back well-formed.
+    const err = new Error("The AI's response didn't match the expected format.");
+    err.retryable = true;
+    throw err;
   }
 
   return fields.map((f, i) => {
@@ -628,7 +661,7 @@ async function matchSavedAnswers(profileId, fields) {
     "You help fill web forms by matching the current questions to a user's previously saved answers.",
     "Only choose answers from the provided saved list — never invent a value.",
     "Match by meaning, not just wording (e.g. \"Full legal name\" matches \"What is your full name?\").",
-    "If no saved answer fits a question, return null for it.",
+    // "If no saved answer fits a question, return null for it.",
     "Reply with ONLY a JSON object mapping each question index to a saved-answer index or null, e.g. {\"0\":2,\"1\":null}."
   ].join("\n");
 
@@ -666,13 +699,56 @@ async function matchSavedAnswers(profileId, fields) {
 }
 
 /** Send a minimal "Say OK" prompt to verify the LLM connection works */
-async function testLLMConnection() {
+async function testLLMConnection(overrideConn) {
   const messages = [
     { role: "system", content: "Reply with exactly: OK" },
     { role: "user", content: "Say OK" }
   ];
-  const text = await callLLM(messages);
+  const text = await callLLM(messages, overrideConn);
   return { ok: true, reply: text };
+}
+
+/**
+ * Fallback question retrieval: the content script's DOM heuristics
+ * (`<label>`, `aria-label`, surrounding siblings, ...) found nothing for a
+ * field, so it sent a small, already-trimmed HTML snippet plus the target
+ * field's own attributes. Ask the LLM to infer the human-readable question
+ * from just that. Best-effort — any failure (no connection configured,
+ * network error, LLM couldn't tell) resolves to `{ question: null }` so the
+ * content script falls back to a humanised name/id instead of surfacing an
+ * error for what is already a fallback path.
+ */
+async function inferFieldQuestion(html, target) {
+  if (!html) return { question: null };
+  const t = target || {};
+  const targetDesc = [
+    t.tag ? `tag=${t.tag}` : null,
+    t.type ? `type=${t.type}` : null,
+    t.name ? `name="${t.name}"` : null,
+    t.id ? `id="${t.id}"` : null,
+    t.placeholder ? `placeholder="${t.placeholder}"` : null
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const messages = [
+    {
+      role: "system",
+      content:
+        "You are given a small HTML snippet from a web form and a description of one specific field inside it. " +
+        "Identify the question or label a human would associate with that field (e.g. \"What is your full name?\" or \"Phone number\"). " +
+        "Reply with ONLY the question/label text — no quotes, no explanation, no markdown. " +
+        "If the snippet genuinely gives no clue, reply with exactly: UNKNOWN"
+    },
+    { role: "user", content: `HTML snippet:\n${html}\n\nTarget field: ${targetDesc || "(no attributes)"}` }
+  ];
+  try {
+    const text = await callLLM(messages);
+    const cleaned = (text || "").trim();
+    if (!cleaned || /^unknown$/i.test(cleaned)) return { question: null };
+    return { question: cleaned.slice(0, 200) };
+  } catch {
+    return { question: null };
+  }
 }
 
 /* ── LLM form detection (runs once per hostname per session) ── */
@@ -856,21 +932,134 @@ async function ensureOffscreenDocument() {
 
 /**
  * Sign in with Google or Apple via the offscreen-document bridge. Returns
- * the signed-in user's { uid, email, displayName, photoURL }.
+ * { user: { uid, email, displayName, photoURL }, idToken, refreshToken }.
  */
 async function firebaseAuthSignIn(provider) {
   await ensureOffscreenDocument();
-  console.log("running");
   try {
-    console.log("were",provider);
     const res = await chrome.runtime.sendMessage({ type: "firebaseAuthSignIn", target: "offscreen", provider });
-    console.log("loggin res",res);
     if (!res || res.error) {
       throw new Error((res && res.error && res.error.message) || "Sign-in failed.");
     }
-    return res.user;
+    return res;
   } finally {
     await chrome.offscreen.closeDocument().catch(() => {});
+  }
+}
+
+/* ── AutoForm AI (hosted, token-gated) ──
+ * "AutoForm AI" is a built-in provider (see shared/providers.js) that calls
+ * AutoForm's own Cloud Function instead of a user-supplied endpoint, using
+ * AutoForm's own provider key. Every call is authenticated as the signed-in
+ * user via a Firebase ID token, and metered server-side by tier/day (see
+ * cloud/functions/lib/entitlement.js) — the client never sees or holds the
+ * underlying API key.
+ */
+
+const CLOUD_FUNCTIONS_BASE = "https://us-central1-autoform-46257.cloudfunctions.net";
+
+/** Exchange a Firebase refresh token for a fresh ID token + refresh token. */
+async function refreshIdToken(refreshTokenPlain) {
+  const apiKey = globalThis.FIREBASE_CONFIG && globalThis.FIREBASE_CONFIG.apiKey;
+  if (!apiKey) throw new Error("Firebase isn't configured.");
+  const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshTokenPlain }).toString()
+  });
+  if (!res.ok) {
+    throw new Error("Your sign-in session expired. Sign in again in Settings → Account.");
+  }
+  const data = await res.json();
+  return {
+    idToken: data.id_token,
+    refreshToken: data.refresh_token || refreshTokenPlain,
+    expiresIn: Number(data.expires_in) || 3600
+  };
+}
+
+/**
+ * Return a currently-valid Firebase ID token for the signed-in account,
+ * refreshing (and persisting the refreshed tokens) if the cached one is
+ * expired or close to it. Returns null if not signed in or no refresh
+ * token is on file (e.g. accounts signed in before this feature existed).
+ */
+async function getFreshIdToken(account) {
+  if (!account || !account.signedIn) return null;
+  const REFRESH_BUFFER_MS = 5 * 60 * 1000;
+  if (
+    account.authIdToken &&
+    account.authIdTokenExpiresAt &&
+    account.authIdTokenExpiresAt - REFRESH_BUFFER_MS > Date.now()
+  ) {
+    return account.authIdToken;
+  }
+  if (!account.authRefreshTokenEnc || typeof FFCrypto === "undefined") return null;
+  const refreshTokenPlain = await FFCrypto.decryptApiKey(account.authRefreshTokenEnc);
+  if (!refreshTokenPlain) return null;
+
+  const { idToken, refreshToken, expiresIn } = await refreshIdToken(refreshTokenPlain);
+  const updated = Object.assign({}, account, {
+    authIdToken: idToken,
+    authIdTokenExpiresAt: Date.now() + expiresIn * 1000,
+    authRefreshTokenEnc: await FFCrypto.encryptApiKey(refreshToken)
+  });
+  await chrome.storage.local.set({ [ACCOUNT_KEY]: updated });
+  return idToken;
+}
+
+/**
+ * Call one of AutoForm's hosted Cloud Functions using the Firebase callable
+ * functions wire protocol (POST {data}, response {result} | {error}) — done
+ * by hand with plain fetch rather than vendoring the Functions client SDK,
+ * matching how callLLM() already speaks the chat/completions wire format
+ * directly instead of pulling in an SDK for it. Requires a signed-in account
+ * with a usable ID token.
+ */
+async function callCloudFunction(name, data) {
+  const account = await getAccount();
+  const idToken = await getFreshIdToken(account);
+  if (!idToken) {
+    throw new Error("Sign in to use AutoForm AI (Settings → Account).");
+  }
+
+  const res = await fetch(`${CLOUD_FUNCTIONS_BASE}/${name}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ data: data || {} })
+  });
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || body.error) {
+    throw new Error((body.error && body.error.message) || `AutoForm AI request failed (${res.status})`);
+  }
+  return body.result;
+}
+
+/** Run a chat completion through AutoForm's hosted `aiChat` function. */
+async function callAutoFormCloudAI(messages, conn) {
+  const result = await callCloudFunction("aiChat", {
+    messages,
+    temperature: conn && typeof conn.temperature === "number" ? conn.temperature : undefined,
+    maxTokens: conn && typeof conn.maxTokens === "number" ? conn.maxTokens : undefined
+  });
+  const text = result && result.text;
+  if (!text) throw new Error("AutoForm AI returned no content");
+  return text.trim();
+}
+
+/**
+ * Fetch today's AutoForm AI usage for the usage progress bar in Settings.
+ * Returns null (rather than throwing) when unavailable — not signed in, no
+ * network, etc. — so the UI can just hide the bar instead of showing an
+ * error for what's a nice-to-have indicator.
+ */
+async function getAutoFormAIUsage() {
+  try {
+    return await callCloudFunction("aiUsage");
+  } catch (e) {
+    console.warn("[autoForm] AutoForm AI usage unavailable:", (e && e.message) || e);
+    return null;
   }
 }
 
@@ -895,6 +1084,7 @@ async function handleMessage(msg) {
         autoSaveTyping: state.autoSaveTyping !== false,
         autoSaveDetection: state.autoSaveDetection === true,
         formDetectionMode: state.formDetectionMode === "auto" ? "auto" : "manual",
+        suggestMaxRetries: clampMaxRetries(state.suggestMaxRetries),
         profiles: Object.values(state.profiles).map(profileSummary),
         connections: state.connections.map(connectionSummary),
         activeConnectionId: state.activeConnectionId
@@ -927,6 +1117,13 @@ async function handleMessage(msg) {
       state.formDetectionMode = msg.mode === "auto" ? "auto" : "manual";
       await setState(state);
       return { ok: true };
+    }
+
+    case "setSuggestMaxRetries": {
+      const state = await getState();
+      state.suggestMaxRetries = clampMaxRetries(msg.value);
+      await setState(state);
+      return { ok: true, suggestMaxRetries: state.suggestMaxRetries };
     }
 
     case "detectFormPage": {
@@ -1002,14 +1199,31 @@ async function handleMessage(msg) {
       return { account, plan: planFor(account), available: accountAvailable() };
     }
 
+    case "getAiUsage":
+      return getAutoFormAIUsage();
+
     case "signOutAccount": {
       await chrome.storage.local.remove(ACCOUNT_KEY);
       return { ok: true };
     }
 
-    case "firebaseAuthSignIn":
-      console.log("firebae");
-      return firebaseAuthSignIn(msg.provider);
+    case "firebaseAuthSignIn": {
+      const result = await firebaseAuthSignIn(msg.provider);
+      const account = FFAccount.signedInAccount(result.user, {
+        provider: msg.provider === "apple" ? "apple.com" : "google.com"
+      });
+      if (result.idToken) {
+        account.authIdToken = result.idToken;
+        // Firebase ID tokens are valid for 1h; getFreshIdToken() refreshes
+        // a few minutes early using authRefreshTokenEnc below.
+        account.authIdTokenExpiresAt = Date.now() + 55 * 60 * 1000;
+      }
+      if (result.refreshToken) {
+        account.authRefreshTokenEnc = await encryptApiKey(result.refreshToken);
+      }
+      await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
+      return account;
+    }
 
     /* ── LLM connection CRUD ── */
 
@@ -1093,7 +1307,10 @@ async function handleMessage(msg) {
       return matchSavedAnswers(msg.profileId, msg.fields || []);
 
     case "testLLM":
-      return testLLMConnection();
+      return testLLMConnection(msg.connection);
+
+    case "inferFieldQuestion":
+      return inferFieldQuestion(msg.html, msg.target);
 
     default:
       throw new Error("Unknown message type: " + msg.type);
@@ -1114,7 +1331,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.target === "offscreen") return false;
   handleMessage(msg)
     .then((result) => sendResponse({ ok: true, data: result }))
-    .catch((err) => sendResponse({ ok: false, error: err.message }));
+    .catch((err) => sendResponse({ ok: false, error: err.message, retryable: err.retryable === true }));
   return true;
 });
 
@@ -1180,6 +1397,7 @@ if (typeof module !== "undefined" && module.exports) {
     handleMessage,
     encryptApiKey,
     decryptApiKey,
+    inferFieldQuestion,
     scoreProfileRelevance,
     checkFormRelevance
   };

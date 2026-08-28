@@ -9,7 +9,8 @@
  * Google isn't trusted from an extension origin.
  *
  * Protocol: parent posts {initAuth: true, provider: "google" | "apple"};
- * this page replies with a JSON-stringified {user: {...}} or {error: {...}}.
+ * this page replies with a JSON-stringified {user, idToken, refreshToken}
+ * or {error: {...}}.
  */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
 import {
@@ -37,9 +38,18 @@ function respond(payload) {
 window.addEventListener("message", (event) => {
   if (!event.data || !event.data.initAuth) return;
   signInWithPopup(auth, providerFor(event.data.provider))
-    .then((cred) => {
+    .then(async (cred) => {
       const u = cred.user;
-      respond({ user: { uid: u.uid, email: u.email, displayName: u.displayName, photoURL: u.photoURL } });
+      // idToken/refreshToken let the extension call AutoForm's Cloud
+      // Functions as this user later (e.g. AutoForm AI) without needing the
+      // full Firebase Auth SDK in the service worker — see background.js's
+      // getFreshIdToken().
+      const idToken = await u.getIdToken();
+      respond({
+        user: { uid: u.uid, email: u.email, displayName: u.displayName, photoURL: u.photoURL },
+        idToken,
+        refreshToken: u.refreshToken
+      });
     })
     .catch((err) => {
       respond({ error: { code: err.code, message: err.message } });

@@ -12,13 +12,19 @@
   "use strict";
 
   /**
-   * Plan tiers. All currently unlimited — the Free/Paid/Local split exists so
-   * per-plan limits (maxProfiles, maxAnswers) can be enabled later by changing
-   * these values without touching the rest of the codebase.
+   * Plan tiers. maxProfiles/maxAnswers are all currently unlimited — the
+   * Free/Paid/Local split exists so those limits can be enabled later by
+   * changing these values without touching the rest of the codebase.
+   *
+   * aiDailyLimit is the nominal AutoForm AI quota shown in the usage
+   * progress bar (Settings → AI Settings). It is NOT enforced yet —
+   * cloud/functions/lib/entitlement.js currently accepts every request
+   * regardless of this number — but the usage count shown is real. Keep
+   * this in sync with TIER_LIMITS in that file by hand.
    */
-  var FREE_PLAN = { key: "free", label: "Free", maxProfiles: Infinity, maxAnswers: Infinity };
-  var PAID_PLAN = { key: "paid", label: "Pro", maxProfiles: Infinity, maxAnswers: Infinity };
-  var LOCAL_PLAN = { key: "local", label: "Local", maxProfiles: Infinity, maxAnswers: Infinity };
+  var FREE_PLAN = { key: "free", label: "Free", maxProfiles: Infinity, maxAnswers: Infinity, aiDailyLimit: 15 };
+  var PAID_PLAN = { key: "paid", label: "Pro", maxProfiles: Infinity, maxAnswers: Infinity, aiDailyLimit: 300 };
+  var LOCAL_PLAN = { key: "local", label: "Local", maxProfiles: Infinity, maxAnswers: Infinity, aiDailyLimit: 0 };
 
   /** Duration of a paid plan cycle (90 days in milliseconds). */
   var THREE_MONTHS_MS = 90 * 24 * 60 * 60 * 1000;

@@ -55,13 +55,14 @@
   function planDetailText(account, plan) {
     if (FFAccount.isPaidActive(account)) {
       const until = new Date(account.planExpiresAt).toLocaleDateString();
-      return `Pro plan active until ${until}. Unlimited profiles and answers.`;
+      return `Pro plan active until ${until}. Unlimited profiles and answers, ${plan.aiDailyLimit} AutoForm AI suggestions/day.`;
     }
+    const aiSuffix = plan.aiDailyLimit > 0 ? `, ${plan.aiDailyLimit} AutoForm AI suggestions/day` : "";
     if (!Number.isFinite(plan.maxProfiles)) {
-      return `${plan.label} plan: unlimited profiles and answers.`;
+      return `${plan.label} plan: unlimited profiles and answers${aiSuffix}.`;
     }
     const p = plan.maxProfiles;
-    return `${plan.label} plan: up to ${p === 1 ? "1 profile" : p + " profiles"} and ${plan.maxAnswers} answers.`;
+    return `${plan.label} plan: up to ${p === 1 ? "1 profile" : p + " profiles"} and ${plan.maxAnswers} answers${aiSuffix}.`;
   }
 
   /* ── UI rendering ── */
@@ -100,25 +101,15 @@
   /**
    * Perform sign-in for "google" or "apple" by asking background.js to run
    * it through the offscreen-document bridge (see the file header comment).
-   * Saves the resulting account to storage and updates the UI.
+   * background.js builds the account (including the auth tokens AutoForm AI
+   * needs) and persists it — this just renders whatever it returns.
    */
   async function signIn(providerName) {
     setStatus("Signing in…");
     try {
       const res = await chrome.runtime.sendMessage({ type: "firebaseAuthSignIn", provider: providerName });
       if (!res || !res.ok) throw new Error((res && res.error) || "Sign-in failed.");
-      const u = res.data;
-      const account = FFAccount.signedInAccount(
-        {
-          uid: u.uid,
-          email: u.email,
-          displayName: u.displayName,
-          photoURL: u.photoURL
-        },
-        { provider: providerName === "apple" ? "apple.com" : "google.com" }
-      );
-      await saveAccount(account);
-      render(account);
+      render(res.data);
       setStatus("Signed in.");
     } catch (err) {
       setStatus((err && err.message) || "Sign-in failed.", true);
