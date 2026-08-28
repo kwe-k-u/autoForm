@@ -40,6 +40,19 @@
       <p id="authStatus" class="status"></p>
     </section>
 
+    <section id="dataChoice" class="card hidden">
+      <h2>Save your data</h2>
+      <p class="hint">
+        Where should your profiles and saved answers live? You can change this later from the
+        signed-in view.
+      </p>
+      <div class="actions">
+        <button id="dataLocalBtn" class="btn">Keep on this device</button>
+        <button id="dataCloudBtn" class="btn">Save to the cloud</button>
+      </div>
+      <p id="dataChoiceStatus" class="status"></p>
+    </section>
+
     <section id="signedIn" class="card hidden">
       <h2>Signed in</h2>
       <div class="account-row">
@@ -51,6 +64,11 @@
         <span id="planBadge" class="badge">Free</span>
       </div>
       <p class="hint" id="planDetail"></p>
+      <div class="account-row">
+        <span class="hint" id="dataStorageLabel">Data storage: On this device</span>
+        <button id="dataStorageChangeBtn" class="btn">Change</button>
+      </div>
+      <p id="dataStorageStatus" class="status"></p>
       <div class="actions">
         <button id="signOutBtn" class="btn btn-danger">Sign out</button>
         <button id="closeBtn" class="btn">Close</button>

@@ -205,6 +205,10 @@ async function persistState(state) {
   } catch (e) {
     throw new Error(`Failed to save extension data: ${(e && e.message) || e}`);
   }
+  // Fire-and-forget — a sync hiccup shouldn't block or fail the local save
+  // that triggered it. content-script.js already debounces the calls that
+  // lead here (e.g. learn-while-typing), so this isn't fired per keystroke.
+  pushDataToCloud(state);
 }
 
 /** Merge a partial patch into the current state and persist */
@@ -1020,7 +1024,7 @@ async function callCloudFunction(name, data) {
   const account = await getAccount();
   const idToken = await getFreshIdToken(account);
   if (!idToken) {
-    throw new Error("Sign in to use AutoForm AI (Settings → Account).");
+    throw new Error("Sign in required (Settings → Account).");
   }
 
   const res = await fetch(`${CLOUD_FUNCTIONS_BASE}/${name}`, {
@@ -1061,6 +1065,94 @@ async function getAutoFormAIUsage() {
     console.warn("[autoForm] AutoForm AI usage unavailable:", (e && e.message) || e);
     return null;
   }
+}
+
+/* ── Cloud data sync ──
+ * Backs the "Keep on this device" / "Save to the cloud" choice on the
+ * account page. Synced data is stored in Firestore via saveUserData /
+ * loadUserData / clearUserData (cloud/functions/lib/userdata.js).
+ */
+
+/**
+ * Subset of state that gets synced to the cloud. Deliberately excludes
+ * `connections` — LLM connection configs (including encrypted API keys) are
+ * encrypted with a key that lives only in this browser's IndexedDB, so
+ * syncing the ciphertext wouldn't let another device decrypt it anyway, and
+ * there's no reason to give it more places to live than it needs to.
+ */
+function syncableState(state) {
+  return {
+    profiles: state.profiles,
+    activeProfileId: state.activeProfileId,
+    autofillEnabled: state.autofillEnabled,
+    autoSaveTyping: state.autoSaveTyping,
+    autoSaveDetection: state.autoSaveDetection,
+    formDetectionMode: state.formDetectionMode,
+    suggestMaxRetries: state.suggestMaxRetries
+  };
+}
+
+/**
+ * Push the current state to the cloud if (and only if) the signed-in
+ * account has opted into cloud storage. Never throws — called from
+ * persistState() on every local save, so a sync hiccup must never block or
+ * fail the local write that triggered it.
+ */
+async function pushDataToCloud(state) {
+  try {
+    const account = await getAccount();
+    if (!account.signedIn || account.dataStorage !== "cloud") return;
+    await callCloudFunction("saveUserData", { data: syncableState(state) });
+  } catch (e) {
+    console.warn("[autoForm] Cloud sync failed:", (e && e.message) || e);
+  }
+}
+
+/**
+ * Called right after sign-in to find out whether this account already has a
+ * data-storage choice on file (from this or another device) — if so, apply
+ * it automatically (pulling down synced data when it says "cloud") instead
+ * of asking again. Returns `{ known: false }` for a first-ever sign-in, so
+ * the account page knows it still needs to ask.
+ */
+async function checkCloudData() {
+  const account = await getAccount();
+  if (!account.signedIn) return { known: false };
+  try {
+    const result = await callCloudFunction("loadUserData");
+    if (!result || !result.dataStorage) return { known: false };
+    account.dataStorage = result.dataStorage;
+    await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
+    if (result.dataStorage === "cloud" && result.data) {
+      await setState(result.data);
+    }
+    return { known: true, dataStorage: result.dataStorage };
+  } catch (e) {
+    console.warn("[autoForm] checkCloudData failed:", (e && e.message) || e);
+    return { known: false };
+  }
+}
+
+/**
+ * Set (or change) the account's data-storage preference. Switching to
+ * "cloud" immediately pushes the current local state up; switching back to
+ * "local" deletes the synced copy so it doesn't linger after the user opted
+ * out.
+ */
+async function setDataStorage(preference) {
+  const account = await getAccount();
+  if (!account.signedIn) throw new Error("Sign in first.");
+  const next = preference === "cloud" ? "cloud" : "local";
+  account.dataStorage = next;
+  await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
+
+  if (next === "cloud") {
+    const state = await getState();
+    await callCloudFunction("saveUserData", { data: syncableState(state) });
+  } else {
+    await callCloudFunction("clearUserData");
+  }
+  return account;
 }
 
 /* ── Message router ── */
@@ -1201,6 +1293,12 @@ async function handleMessage(msg) {
 
     case "getAiUsage":
       return getAutoFormAIUsage();
+
+    case "checkCloudData":
+      return checkCloudData();
+
+    case "setDataStorage":
+      return setDataStorage(msg.preference);
 
     case "signOutAccount": {
       await chrome.storage.local.remove(ACCOUNT_KEY);
