@@ -28,6 +28,7 @@
     answersView: "all",         // "all" (flat table) or "sites" (grouped cards)
     expandedSites: new Set(),   // Which site cards are expanded in sites view
     account: null,              // Current account data from background
+    aiUsage: null,               // Today's AutoForm AI usage ({tier, limit, used, remaining}) or null
     autoSaveDetection: false,   // Whether LLM auto-detect forms is enabled
     formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
     suggestMaxRetries: 3        // Max auto-retries for a malformed "Suggest with AI" response
@@ -56,6 +57,11 @@
       f.apiKey.title = "Not required for this provider";
     }
     if (preset.model) f.model.placeholder = preset.model;
+
+    // AutoForm AI is hosted — there's no base URL or API key to configure.
+    $("baseUrlField").classList.toggle("hidden", !!preset.builtin);
+    $("apiKeyField").classList.toggle("hidden", !!preset.builtin);
+    $("autoformAiNote").classList.toggle("hidden", !preset.builtin);
   }
 
   /**
@@ -117,6 +123,32 @@
   async function loadAccount() {
     const res = await sendMsg({ type: "getAccount" });
     state.account = res.ok ? res.data : null;
+  }
+
+  /** Load today's AutoForm AI usage (null if signed out, offline, etc.) */
+  async function loadAiUsage() {
+    const res = await sendMsg({ type: "getAiUsage" });
+    state.aiUsage = res.ok ? res.data : null;
+  }
+
+  /**
+   * Render the "AutoForm AI usage today" progress bar. Hidden entirely when
+   * usage isn't available (signed out, or the cloud call failed) — this is
+   * a nice-to-have indicator, not something worth showing an error for.
+   */
+  function renderAiUsage() {
+    const card = $("aiUsageCard");
+    const usage = state.aiUsage;
+    if (!card) return;
+    if (!usage || !Number.isFinite(usage.limit) || usage.limit <= 0) {
+      card.classList.add("hidden");
+      return;
+    }
+    card.classList.remove("hidden");
+    $("aiUsageBar").max = usage.limit;
+    $("aiUsageBar").value = Math.min(usage.used, usage.limit);
+    const tierLabel = usage.tier === "paid" ? "Pro" : "Free";
+    $("aiUsageText").textContent = `${usage.used} / ${usage.limit} (${tierLabel})`;
   }
 
   /* ── Plan banner ── */
@@ -989,6 +1021,8 @@
   async function refresh() {
     await loadAccount();
     renderPlanBanner();
+    await loadAiUsage();
+    renderAiUsage();
     await loadState();
     renderProfiles();
     renderAutoDetectToggle();

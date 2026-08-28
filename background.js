@@ -67,6 +67,14 @@ function isLocalProvider(provider) {
   return /^(Ollama|LM Studio)$/.test(String(provider || ""));
 }
 
+/** True for AutoForm's own hosted/built-in provider (see callAutoFormCloudAI) */
+function isAutoFormAIProvider(provider) {
+  if (typeof FFProviders !== "undefined" && FFProviders.isAutoFormAIProvider) {
+    return FFProviders.isAutoFormAIProvider(provider);
+  }
+  return String(provider || "") === "AutoForm AI";
+}
+
 /* ── ID generation ── */
 
 /** Create a prefixed unique ID (e.g. "p_abc123_def456") */
@@ -197,6 +205,10 @@ async function persistState(state) {
   } catch (e) {
     throw new Error(`Failed to save extension data: ${(e && e.message) || e}`);
   }
+  // Fire-and-forget — a sync hiccup shouldn't block or fail the local save
+  // that triggered it. content-script.js already debounces the calls that
+  // lead here (e.g. learn-while-typing), so this isn't fired per keystroke.
+  pushDataToCloud(state);
 }
 
 /** Merge a partial patch into the current state and persist */
@@ -493,6 +505,11 @@ async function callLLM(messages, overrideConn) {
     throw new Error("No AI connection configured. Add one in Settings.");
   }
   const conn = overrideConn ? Object.assign({}, active || {}, overrideConn) : active;
+
+  if (isAutoFormAIProvider(conn.provider)) {
+    return callAutoFormCloudAI(messages, conn);
+  }
+
   const apiKey =
     overrideConn && overrideConn.apiKey ? overrideConn.apiKey : await decryptApiKey(active || {});
   if (!apiKey && !isLocalProvider(conn.provider)) {
@@ -919,22 +936,223 @@ async function ensureOffscreenDocument() {
 
 /**
  * Sign in with Google or Apple via the offscreen-document bridge. Returns
- * the signed-in user's { uid, email, displayName, photoURL }.
+ * { user: { uid, email, displayName, photoURL }, idToken, refreshToken }.
  */
 async function firebaseAuthSignIn(provider) {
   await ensureOffscreenDocument();
-  console.log("running");
   try {
-    console.log("were",provider);
     const res = await chrome.runtime.sendMessage({ type: "firebaseAuthSignIn", target: "offscreen", provider });
-    console.log("loggin res",res);
     if (!res || res.error) {
       throw new Error((res && res.error && res.error.message) || "Sign-in failed.");
     }
-    return res.user;
+    return res;
   } finally {
     await chrome.offscreen.closeDocument().catch(() => {});
   }
+}
+
+/* ── AutoForm AI (hosted, token-gated) ──
+ * "AutoForm AI" is a built-in provider (see shared/providers.js) that calls
+ * AutoForm's own Cloud Function instead of a user-supplied endpoint, using
+ * AutoForm's own provider key. Every call is authenticated as the signed-in
+ * user via a Firebase ID token, and metered server-side by tier/day (see
+ * cloud/functions/lib/entitlement.js) — the client never sees or holds the
+ * underlying API key.
+ */
+
+const CLOUD_FUNCTIONS_BASE = "https://us-central1-autoform-46257.cloudfunctions.net";
+
+/** Exchange a Firebase refresh token for a fresh ID token + refresh token. */
+async function refreshIdToken(refreshTokenPlain) {
+  const apiKey = globalThis.FIREBASE_CONFIG && globalThis.FIREBASE_CONFIG.apiKey;
+  if (!apiKey) throw new Error("Firebase isn't configured.");
+  const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshTokenPlain }).toString()
+  });
+  if (!res.ok) {
+    throw new Error("Your sign-in session expired. Sign in again in Settings → Account.");
+  }
+  const data = await res.json();
+  return {
+    idToken: data.id_token,
+    refreshToken: data.refresh_token || refreshTokenPlain,
+    expiresIn: Number(data.expires_in) || 3600
+  };
+}
+
+/**
+ * Return a currently-valid Firebase ID token for the signed-in account,
+ * refreshing (and persisting the refreshed tokens) if the cached one is
+ * expired or close to it. Returns null if not signed in or no refresh
+ * token is on file (e.g. accounts signed in before this feature existed).
+ */
+async function getFreshIdToken(account) {
+  if (!account || !account.signedIn) return null;
+  const REFRESH_BUFFER_MS = 5 * 60 * 1000;
+  if (
+    account.authIdToken &&
+    account.authIdTokenExpiresAt &&
+    account.authIdTokenExpiresAt - REFRESH_BUFFER_MS > Date.now()
+  ) {
+    return account.authIdToken;
+  }
+  if (!account.authRefreshTokenEnc || typeof FFCrypto === "undefined") return null;
+  const refreshTokenPlain = await FFCrypto.decryptApiKey(account.authRefreshTokenEnc);
+  if (!refreshTokenPlain) return null;
+
+  const { idToken, refreshToken, expiresIn } = await refreshIdToken(refreshTokenPlain);
+  const updated = Object.assign({}, account, {
+    authIdToken: idToken,
+    authIdTokenExpiresAt: Date.now() + expiresIn * 1000,
+    authRefreshTokenEnc: await FFCrypto.encryptApiKey(refreshToken)
+  });
+  await chrome.storage.local.set({ [ACCOUNT_KEY]: updated });
+  return idToken;
+}
+
+/**
+ * Call one of AutoForm's hosted Cloud Functions using the Firebase callable
+ * functions wire protocol (POST {data}, response {result} | {error}) — done
+ * by hand with plain fetch rather than vendoring the Functions client SDK,
+ * matching how callLLM() already speaks the chat/completions wire format
+ * directly instead of pulling in an SDK for it. Requires a signed-in account
+ * with a usable ID token.
+ */
+async function callCloudFunction(name, data) {
+  const account = await getAccount();
+  const idToken = await getFreshIdToken(account);
+  if (!idToken) {
+    throw new Error("Sign in required (Settings → Account).");
+  }
+
+  const res = await fetch(`${CLOUD_FUNCTIONS_BASE}/${name}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ data: data || {} })
+  });
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || body.error) {
+    throw new Error((body.error && body.error.message) || `AutoForm AI request failed (${res.status})`);
+  }
+  return body.result;
+}
+
+/** Run a chat completion through AutoForm's hosted `aiChat` function. */
+async function callAutoFormCloudAI(messages, conn) {
+  const result = await callCloudFunction("aiChat", {
+    messages,
+    temperature: conn && typeof conn.temperature === "number" ? conn.temperature : undefined,
+    maxTokens: conn && typeof conn.maxTokens === "number" ? conn.maxTokens : undefined
+  });
+  const text = result && result.text;
+  if (!text) throw new Error("AutoForm AI returned no content");
+  return text.trim();
+}
+
+/**
+ * Fetch today's AutoForm AI usage for the usage progress bar in Settings.
+ * Returns null (rather than throwing) when unavailable — not signed in, no
+ * network, etc. — so the UI can just hide the bar instead of showing an
+ * error for what's a nice-to-have indicator.
+ */
+async function getAutoFormAIUsage() {
+  try {
+    return await callCloudFunction("aiUsage");
+  } catch (e) {
+    console.warn("[autoForm] AutoForm AI usage unavailable:", (e && e.message) || e);
+    return null;
+  }
+}
+
+/* ── Cloud data sync ──
+ * Backs the "Keep on this device" / "Save to the cloud" choice on the
+ * account page. Synced data is stored in Firestore via saveUserData /
+ * loadUserData / clearUserData (cloud/functions/lib/userdata.js).
+ */
+
+/**
+ * Subset of state that gets synced to the cloud. Deliberately excludes
+ * `connections` — LLM connection configs (including encrypted API keys) are
+ * encrypted with a key that lives only in this browser's IndexedDB, so
+ * syncing the ciphertext wouldn't let another device decrypt it anyway, and
+ * there's no reason to give it more places to live than it needs to.
+ */
+function syncableState(state) {
+  return {
+    profiles: state.profiles,
+    activeProfileId: state.activeProfileId,
+    autofillEnabled: state.autofillEnabled,
+    autoSaveTyping: state.autoSaveTyping,
+    autoSaveDetection: state.autoSaveDetection,
+    formDetectionMode: state.formDetectionMode,
+    suggestMaxRetries: state.suggestMaxRetries
+  };
+}
+
+/**
+ * Push the current state to the cloud if (and only if) the signed-in
+ * account has opted into cloud storage. Never throws — called from
+ * persistState() on every local save, so a sync hiccup must never block or
+ * fail the local write that triggered it.
+ */
+async function pushDataToCloud(state) {
+  try {
+    const account = await getAccount();
+    if (!account.signedIn || account.dataStorage !== "cloud") return;
+    await callCloudFunction("saveUserData", { data: syncableState(state) });
+  } catch (e) {
+    console.warn("[autoForm] Cloud sync failed:", (e && e.message) || e);
+  }
+}
+
+/**
+ * Called right after sign-in to find out whether this account already has a
+ * data-storage choice on file (from this or another device) — if so, apply
+ * it automatically (pulling down synced data when it says "cloud") instead
+ * of asking again. Returns `{ known: false }` for a first-ever sign-in, so
+ * the account page knows it still needs to ask.
+ */
+async function checkCloudData() {
+  const account = await getAccount();
+  if (!account.signedIn) return { known: false };
+  try {
+    const result = await callCloudFunction("loadUserData");
+    if (!result || !result.dataStorage) return { known: false };
+    account.dataStorage = result.dataStorage;
+    await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
+    if (result.dataStorage === "cloud" && result.data) {
+      await setState(result.data);
+    }
+    return { known: true, dataStorage: result.dataStorage };
+  } catch (e) {
+    console.warn("[autoForm] checkCloudData failed:", (e && e.message) || e);
+    return { known: false };
+  }
+}
+
+/**
+ * Set (or change) the account's data-storage preference. Switching to
+ * "cloud" immediately pushes the current local state up; switching back to
+ * "local" deletes the synced copy so it doesn't linger after the user opted
+ * out.
+ */
+async function setDataStorage(preference) {
+  const account = await getAccount();
+  if (!account.signedIn) throw new Error("Sign in first.");
+  const next = preference === "cloud" ? "cloud" : "local";
+  account.dataStorage = next;
+  await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
+
+  if (next === "cloud") {
+    const state = await getState();
+    await callCloudFunction("saveUserData", { data: syncableState(state) });
+  } else {
+    await callCloudFunction("clearUserData");
+  }
+  return account;
 }
 
 /* ── Message router ── */
@@ -1073,14 +1291,37 @@ async function handleMessage(msg) {
       return { account, plan: planFor(account), available: accountAvailable() };
     }
 
+    case "getAiUsage":
+      return getAutoFormAIUsage();
+
+    case "checkCloudData":
+      return checkCloudData();
+
+    case "setDataStorage":
+      return setDataStorage(msg.preference);
+
     case "signOutAccount": {
       await chrome.storage.local.remove(ACCOUNT_KEY);
       return { ok: true };
     }
 
-    case "firebaseAuthSignIn":
-      console.log("firebae");
-      return firebaseAuthSignIn(msg.provider);
+    case "firebaseAuthSignIn": {
+      const result = await firebaseAuthSignIn(msg.provider);
+      const account = FFAccount.signedInAccount(result.user, {
+        provider: msg.provider === "apple" ? "apple.com" : "google.com"
+      });
+      if (result.idToken) {
+        account.authIdToken = result.idToken;
+        // Firebase ID tokens are valid for 1h; getFreshIdToken() refreshes
+        // a few minutes early using authRefreshTokenEnc below.
+        account.authIdTokenExpiresAt = Date.now() + 55 * 60 * 1000;
+      }
+      if (result.refreshToken) {
+        account.authRefreshTokenEnc = await encryptApiKey(result.refreshToken);
+      }
+      await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
+      return account;
+    }
 
     /* ── LLM connection CRUD ── */
 

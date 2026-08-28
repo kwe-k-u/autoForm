@@ -13,6 +13,19 @@
 
   /** Preset configuration for every supported LLM provider. */
   var PROVIDER_PRESETS = {
+    "AutoForm AI": {
+      baseUrl: "",
+      model: "",
+      apiKeyHint: "not required",
+      apiKeyOptional: true,
+      temperature: 0.3,
+      maxTokens: 512,
+      // Built-in, hosted provider: no base URL or API key to fill in — every
+      // call runs through AutoForm's own Cloud Function using AutoForm's own
+      // provider key, gated by the signed-in user's tier and daily quota.
+      builtin: true,
+      requiresSignIn: true
+    },
     OpenAI: {
       baseUrl: "https://api.openai.com/v1",
       model: "gpt-4o-mini",
@@ -82,12 +95,18 @@
     return name === "Ollama" || name === "LM Studio";
   }
 
+  /** Return true for AutoForm's own hosted/built-in provider. */
+  function isAutoFormAIProvider(provider) {
+    return !!(PROVIDER_PRESETS[provider] && PROVIDER_PRESETS[provider].builtin);
+  }
+
   root.FFProviders = {
     PRESETS: PROVIDER_PRESETS,
     preset: preset,
     names: function () {
       return Object.keys(PROVIDER_PRESETS);
     },
-    isLocalProvider: isLocalProvider
+    isLocalProvider: isLocalProvider,
+    isAutoFormAIProvider: isAutoFormAIProvider
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);

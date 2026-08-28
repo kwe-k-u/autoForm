@@ -3,6 +3,10 @@
 /firebase-config.js
 test-forms/*
 
+# Firebase CLI deploy cache / logs
+.firebase/
+firebase-debug.log
+
 # Node
 node_modules/
 
