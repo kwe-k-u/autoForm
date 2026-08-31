@@ -1077,6 +1077,73 @@ ul {
   text-align: center;
 }
 
+.footer-bottom a {
+  color: var(--text-muted-dark);
+  text-decoration: underline;
+}
+
+.footer-bottom a:hover {
+  color: var(--white);
+}
+
+/* ==========================================================================
+   Legal pages (Terms, Privacy)
+   ========================================================================== */
+.legal {
+  padding: 160px 24px 96px;
+}
+
+.legal-inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.legal-inner h1 {
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: clamp(32px, 5vw, 44px);
+  line-height: 1.15;
+  margin-bottom: 12px;
+}
+
+.legal-updated {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-bottom: 48px;
+}
+
+.legal-inner h2 {
+  font-family: var(--font-serif);
+  font-weight: 700;
+  font-size: 24px;
+  margin: 40px 0 16px;
+}
+
+.legal-inner p {
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1.7;
+  margin-bottom: 16px;
+}
+
+.legal-inner ul {
+  margin: 0 0 16px;
+  padding-left: 20px;
+  list-style: disc;
+}
+
+.legal-inner li {
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1.7;
+  margin-bottom: 8px;
+}
+
+.legal-inner a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
 /* ==========================================================================
    Responsive
    ========================================================================== */
