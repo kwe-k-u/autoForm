@@ -8,16 +8,16 @@ installImportScripts();
 
 const background = require("../background.js");
 
-async function seedProfile(profileId) {
+async function seedApplication(applicationId) {
   const state = await background.getState();
-  state.profiles[profileId] = { id: profileId, name: "Test", createdAt: 1, updatedAt: 1, answers: {} };
+  state.applications[applicationId] = { id: applicationId, name: "Test", createdAt: 1, updatedAt: 1, answers: {} };
   await background.persistState(state);
 }
 
 /** Temporarily force FFAccount.planFor to return a finite-limit plan */
 async function withFinitePlan(maxAnswers, fn) {
   const original = global.FFAccount.planFor;
-  global.FFAccount.planFor = () => ({ key: "free", label: "Free", maxProfiles: 1, maxAnswers });
+  global.FFAccount.planFor = () => ({ key: "free", label: "Free", maxApplications: 1, maxAnswers });
   try {
     await fn();
   } finally {
@@ -25,57 +25,124 @@ async function withFinitePlan(maxAnswers, fn) {
   }
 }
 
-describe("saveAnswers plan-limit enforcement", () => {
+describe("saveApplicationAnswers plan-limit enforcement", () => {
   test("throws once a finite plan's answer cap would be exceeded", async () => {
     await withFinitePlan(2, async () => {
-      await seedProfile("cap-1");
-      await background.saveAnswers("cap-1", [
+      await seedApplication("cap-1");
+      await background.saveApplicationAnswers("cap-1", [
         { key: "email", value: "a@b.com" },
         { key: "name", value: "Jane" }
       ]);
       await expect(
-        background.saveAnswers("cap-1", [{ key: "phone", value: "12345" }])
+        background.saveApplicationAnswers("cap-1", [{ key: "phone", value: "12345" }])
       ).rejects.toThrow(/Free plan limit reached/);
     });
   });
 
   test("updating an existing key doesn't count against the cap", async () => {
     await withFinitePlan(2, async () => {
-      await seedProfile("cap-2");
-      await background.saveAnswers("cap-2", [
+      await seedApplication("cap-2");
+      await background.saveApplicationAnswers("cap-2", [
         { key: "email", value: "a@b.com" },
         { key: "name", value: "Jane" }
       ]);
       await expect(
-        background.saveAnswers("cap-2", [{ key: "email", value: "updated@b.com" }])
+        background.saveApplicationAnswers("cap-2", [{ key: "email", value: "updated@b.com" }])
       ).resolves.toEqual({ saved: true });
     });
   });
 
   test("deleting a key (empty value) frees up room under the cap", async () => {
     await withFinitePlan(2, async () => {
-      await seedProfile("cap-3");
-      await background.saveAnswers("cap-3", [
+      await seedApplication("cap-3");
+      await background.saveApplicationAnswers("cap-3", [
         { key: "email", value: "a@b.com" },
         { key: "name", value: "Jane" }
       ]);
-      await background.saveAnswers("cap-3", [{ key: "name", value: "" }]);
+      await background.saveApplicationAnswers("cap-3", [{ key: "name", value: "" }]);
       await expect(
-        background.saveAnswers("cap-3", [{ key: "phone", value: "12345" }])
+        background.saveApplicationAnswers("cap-3", [{ key: "phone", value: "12345" }])
       ).resolves.toEqual({ saved: true });
     });
   });
 
-  test("throws for an unknown profile", async () => {
+  test("throws for an unknown application", async () => {
     await expect(
-      background.saveAnswers("does-not-exist", [{ key: "a", value: "b" }])
-    ).rejects.toThrow("Profile not found");
+      background.saveApplicationAnswers("does-not-exist", [{ key: "a", value: "b" }])
+    ).rejects.toThrow("Application not found");
   });
 
   test("no cap is enforced under the real Infinity-limit plans", async () => {
-    await seedProfile("nocap");
+    await seedApplication("nocap");
     const pairs = Array.from({ length: 50 }, (_, i) => ({ key: `field_${i}`, value: `v${i}` }));
-    await expect(background.saveAnswers("nocap", pairs)).resolves.toEqual({ saved: true });
+    await expect(background.saveApplicationAnswers("nocap", pairs)).resolves.toEqual({ saved: true });
+  });
+});
+
+describe("Profile answers CRUD (shared identity answers)", () => {
+  test("getUserProfile starts out empty", async () => {
+    await background.persistState(background.defaultState());
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers).toEqual({});
+  });
+
+  test("saveProfileAnswers upserts into the shared Profile, not any Application", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("app-1");
+    await background.saveProfileAnswers([{ key: "full_name", value: "Jane Doe" }]);
+
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.full_name.value).toBe("Jane Doe");
+
+    const application = await background.handleMessage({ type: "getApplication", applicationId: "app-1" });
+    expect(application.answers.full_name).toBeUndefined();
+  });
+
+  test("deleteProfileAnswer removes a single shared answer", async () => {
+    await background.persistState(background.defaultState());
+    await background.saveProfileAnswers([{ key: "phone", value: "555-1234" }]);
+    await background.deleteProfileAnswer("phone");
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.phone).toBeUndefined();
+  });
+
+  test("saveProfileAnswers respects the plan's finite maxAnswers cap", async () => {
+    await withFinitePlan(1, async () => {
+      await background.persistState(background.defaultState());
+      await background.saveProfileAnswers([{ key: "full_name", value: "Jane Doe" }]);
+      await expect(
+        background.saveProfileAnswers([{ key: "phone", value: "555-1234" }])
+      ).rejects.toThrow(/Free plan limit reached/);
+    });
+  });
+});
+
+describe("getEffectiveApplication (Profile + Application merge)", () => {
+  test("an Application with no saved answer still sees the shared Profile's answer", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("merge-1");
+    await background.saveProfileAnswers([{ key: "email", value: "shared@example.com" }]);
+
+    const state = await background.getState();
+    const effective = background.getEffectiveApplication(state, "merge-1");
+    expect(effective.answers.email.value).toBe("shared@example.com");
+  });
+
+  test("an Application-owned key wins over a same-named Profile key", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("merge-2");
+    await background.saveProfileAnswers([{ key: "email", value: "shared@example.com" }]);
+    await background.saveApplicationAnswers("merge-2", [{ key: "email", value: "app-specific@example.com" }]);
+
+    const state = await background.getState();
+    const effective = background.getEffectiveApplication(state, "merge-2");
+    expect(effective.answers.email.value).toBe("app-specific@example.com");
+  });
+
+  test("returns null for an unknown application", async () => {
+    await background.persistState(background.defaultState());
+    const state = await background.getState();
+    expect(background.getEffectiveApplication(state, "nope")).toBeNull();
   });
 });
 
@@ -138,6 +205,26 @@ describe("applyMigrations", () => {
     const changed = await background.applyMigrations(state);
     expect(changed).toBe(true);
     expect(state.connections).toEqual([]);
+  });
+
+  test("migrates a legacy `profiles`/`activeProfileId` shape into `applications`/`activeApplicationId`", async () => {
+    const state = {
+      profiles: { "p1": { id: "p1", name: "Old Profile", answers: {} } },
+      activeProfileId: "p1"
+    };
+    const changed = await background.applyMigrations(state);
+    expect(changed).toBe(true);
+    expect(state.profiles).toBeUndefined();
+    expect(state.activeProfileId).toBeUndefined();
+    expect(state.applications).toEqual({ "p1": { id: "p1", name: "Old Profile", answers: {} } });
+    expect(state.activeApplicationId).toBe("p1");
+  });
+
+  test("creates an empty shared Profile when migrating legacy state that never had one", async () => {
+    const state = { profiles: {}, activeProfileId: null };
+    const changed = await background.applyMigrations(state);
+    expect(changed).toBe(true);
+    expect(state.profile).toEqual({ answers: {}, updatedAt: null });
   });
 
   test("is a no-op for already-current state", async () => {
@@ -405,7 +492,7 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
   });
 
   test("throws with retryable:true when the batch reply isn't valid JSON (regression: retry-on-bad-format)", async () => {
-    await seedProfile("retry-profile");
+    await seedApplication("retry-app");
     await background.handleMessage({
       type: "createConnection",
       provider: "OpenAI",
@@ -421,7 +508,7 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
     try {
       await background.handleMessage({
         type: "suggestAnswers",
-        profileId: "retry-profile",
+        applicationId: "retry-app",
         fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
       });
     } catch (e) {
@@ -432,7 +519,7 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
   });
 
   test("a well-formed retry succeeds after a malformed first attempt", async () => {
-    await seedProfile("retry-profile-2");
+    await seedApplication("retry-app-2");
     await background.handleMessage({
       type: "createConnection",
       provider: "OpenAI",
@@ -451,22 +538,74 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
     await expect(
       background.handleMessage({
         type: "suggestAnswers",
-        profileId: "retry-profile-2",
+        applicationId: "retry-app-2",
         fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
       })
     ).rejects.toThrow();
 
     const result = await background.handleMessage({
       type: "suggestAnswers",
-      profileId: "retry-profile-2",
+      applicationId: "retry-app-2",
       fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
     });
     expect(result[0].suggested).toBe("Jane Doe");
   });
+
+  test("sees the shared Profile's answers merged in, not just the Application's own", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("retry-app-3");
+    await background.saveProfileAnswers([{ key: "name", value: "Jane Doe" }]);
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"field_0":"ignored"}' } }] })
+    }));
+
+    await background.handleMessage({
+      type: "suggestAnswers",
+      applicationId: "retry-app-3",
+      fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+    });
+
+    const [, opts] = global.fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    const systemMessage = body.messages.find((m) => m.role === "system").content;
+    expect(systemMessage).toContain("Jane Doe");
+  });
 });
 
-describe("scoreProfileRelevance", () => {
-  const profile = {
+describe("matchSavedAnswers sees merged Profile + Application answers", () => {
+  test("matches a field against a Profile-only saved answer via an Application with no such key", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("match-app");
+    await background.saveProfileAnswers([{ key: "email", value: "shared@example.com", question: "Email" }]);
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"0":0}' } }] })
+    }));
+
+    const result = await background.handleMessage({
+      type: "matchSavedAnswers",
+      applicationId: "match-app",
+      fields: [{ key: "email", question: "Email address" }]
+    });
+    expect(result[0].value).toBe("shared@example.com");
+  });
+});
+
+describe("scoreApplicationRelevance", () => {
+  const application = {
     id: "p1",
     answers: {
       email_address: { value: "a@b.com" },
@@ -475,34 +614,34 @@ describe("scoreProfileRelevance", () => {
     }
   };
 
-  test("returns zero for a profile with no saved answers", () => {
-    expect(background.scoreProfileRelevance({ id: "empty", answers: {} }, ["Email Address"]))
+  test("returns zero for an application with no saved answers", () => {
+    expect(background.scoreApplicationRelevance({ id: "empty", answers: {} }, ["Email Address"]))
       .toEqual({ score: 0, matches: 0 });
   });
 
-  test("returns zero for a null/undefined profile", () => {
-    expect(background.scoreProfileRelevance(null, ["Email Address"])).toEqual({ score: 0, matches: 0 });
+  test("returns zero for a null/undefined application", () => {
+    expect(background.scoreApplicationRelevance(null, ["Email Address"])).toEqual({ score: 0, matches: 0 });
   });
 
   test("returns zero when there are no field labels to score", () => {
-    expect(background.scoreProfileRelevance(profile, [])).toEqual({ score: 0, matches: 0 });
+    expect(background.scoreApplicationRelevance(application, [])).toEqual({ score: 0, matches: 0 });
   });
 
   test("matches field labels against saved answer keys via Dice-token overlap", () => {
-    const result = background.scoreProfileRelevance(profile, ["Email Address", "First Name", "Phone Number"]);
+    const result = background.scoreApplicationRelevance(application, ["Email Address", "First Name", "Phone Number"]);
     expect(result.matches).toBe(3);
     expect(result.score).toBe(1);
   });
 
   test("unrelated field labels don't match", () => {
-    const result = background.scoreProfileRelevance(profile, ["Favorite Color", "Comments"]);
+    const result = background.scoreApplicationRelevance(application, ["Favorite Color", "Comments"]);
     expect(result.matches).toBe(0);
     expect(result.score).toBe(0);
   });
 });
 
 describe("checkFormRelevance", () => {
-  const profileWithAnswers = {
+  const applicationWithAnswers = {
     id: "match-me",
     answers: {
       email_address: { value: "a@b.com" },
@@ -510,21 +649,21 @@ describe("checkFormRelevance", () => {
       last_name: { value: "Doe" }
     }
   };
-  const emptyProfile = { id: "no-answers", answers: {} };
+  const emptyApplication = { id: "no-answers", answers: {} };
   const fieldLabels = ["Email Address", "First Name", "Last Name"];
 
-  test("not relevant when there are no profiles", () => {
-    expect(background.checkFormRelevance(fieldLabels, [])).toEqual({ relevant: false, matchedProfileId: null });
+  test("not relevant when there are no applications", () => {
+    expect(background.checkFormRelevance(fieldLabels, [])).toEqual({ relevant: false, matchedApplicationId: null });
   });
 
-  test("not relevant when no profile clears the match threshold", () => {
-    expect(background.checkFormRelevance(["Favorite Color", "Comments"], [profileWithAnswers, emptyProfile]))
-      .toEqual({ relevant: false, matchedProfileId: null });
+  test("not relevant when no application clears the match threshold", () => {
+    expect(background.checkFormRelevance(["Favorite Color", "Comments"], [applicationWithAnswers, emptyApplication]))
+      .toEqual({ relevant: false, matchedApplicationId: null });
   });
 
-  test("relevant and identifies the best-matching profile among several", () => {
-    expect(background.checkFormRelevance(fieldLabels, [emptyProfile, profileWithAnswers]))
-      .toEqual({ relevant: true, matchedProfileId: "match-me" });
+  test("relevant and identifies the best-matching application among several", () => {
+    expect(background.checkFormRelevance(fieldLabels, [emptyApplication, applicationWithAnswers]))
+      .toEqual({ relevant: true, matchedApplicationId: "match-me" });
   });
 });
 

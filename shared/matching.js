@@ -81,9 +81,9 @@
    * 3. Name-part guard: won't map "first_name" → "full_name" unless a
    *    part-name answer actually exists.
    */
-  function matchAnswer(profile, labelKey, nameKey) {
-    if (!profile) return null;
-    var answers = profile.answers || {};
+  function matchAnswer(answersSource, labelKey, nameKey) {
+    if (!answersSource) return null;
+    var answers = answersSource.answers || {};
     var keys = Object.keys(answers);
     if (!keys.length) return null;
     if (labelKey && answers[labelKey]) return answers[labelKey];

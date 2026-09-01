@@ -14,7 +14,8 @@
         <strong>autoForm</strong>
       </div>
       <nav id="nav">
-        <button class="nav-btn active" data-view="profiles">Profiles</button>
+        <button class="nav-btn active" data-view="profile">Profile</button>
+        <button class="nav-btn" data-view="applications">Applications</button>
         <button class="nav-btn" data-view="answers">Answers</button>
         <button class="nav-btn" data-view="ai">AI Settings</button>
         <button class="nav-btn" data-view="data">Data</button>
@@ -24,16 +25,31 @@
     <main class="content">
       <div id="planBanner" class="plan-banner"></div>
 
-      <section id="view-profiles" class="view">
+      <section id="view-profile" class="view">
         <div class="view-head">
-          <h2>Profiles</h2>
-          <button id="addProfileBtn" class="btn btn-primary">+ Add profile</button>
+          <h2>Profile</h2>
+          <button id="addProfileAnswerBtn" class="btn btn-primary">+ Add field</button>
+        </div>
+        <p class="hint">
+          Shared identity info — name, phone, email, education, and anything else that's the same
+          everywhere — kept once here and reused across every Application below.
+        </p>
+        <div id="profileAnswersList" class="answers-list"></div>
+        <div id="profileAnswersEmpty" class="empty hidden">
+          No shared answers yet. Add fields like your name, phone, or email so every application can reuse them.
+        </div>
+      </section>
+
+      <section id="view-applications" class="view hidden">
+        <div class="view-head">
+          <h2>Applications</h2>
+          <button id="addApplicationBtn" class="btn btn-primary">+ Add application</button>
         </div>
         <div class="card" style="max-width:100%;margin-bottom:18px;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
             <div>
               <strong>Auto-detect forms</strong>
-              <p class="hint" style="margin-bottom:0;">Use AI to detect application forms relevant to your profile, then either ask before saving or save automatically.</p>
+              <p class="hint" style="margin-bottom:0;">Use AI to detect application forms relevant to your saved answers, then either ask before saving or save automatically.</p>
             </div>
             <label class="switch-wrap">
               <input type="checkbox" id="autoDetectToggle" />
@@ -48,10 +64,10 @@
             </div>
           </div>
         </div>
-        <p class="hint">Profiles group your answers by purpose, e.g. "Job Application" or "Small Business".</p>
-        <ul id="profileList" class="profile-list"></ul>
-        <div id="profilesEmpty" class="empty hidden">
-          No profiles yet. Create one to start saving answers.
+        <p class="hint">Applications group your answers by purpose, e.g. "Job Application" or "Small Business".</p>
+        <ul id="applicationList" class="application-list"></ul>
+        <div id="applicationsEmpty" class="empty hidden">
+          No applications yet. Create one to start saving answers.
         </div>
       </section>
 
@@ -62,8 +78,8 @@
           <input type="search" id="answerSearch" class="search" placeholder="Search questions or answers…" />
         </div>
         <div class="view-head sub">
-          <label for="answersProfileSelect">Profile:</label>
-          <select id="answersProfileSelect" class="grow"></select>
+          <label for="answersApplicationSelect">Application:</label>
+          <select id="answersApplicationSelect" class="grow"></select>
           <button id="addAnswerBtn" class="btn btn-ghost">+ Add answer</button>
         </div>
         <div class="view-toggle" id="answersViewToggle">
@@ -72,7 +88,7 @@
         </div>
         <div id="answersList" class="answers-list"></div>
         <div id="siteCards"></div>
-        <div id="answersEmpty" class="empty hidden">No answers saved in this profile yet.</div>
+        <div id="answersEmpty" class="empty hidden">No answers saved in this application yet.</div>
       </section>
 
       <section id="view-ai" class="view hidden">
@@ -169,7 +185,7 @@
         </div>
         <div class="card">
           <h3>Export</h3>
-          <p class="hint">Download all profiles and settings as a JSON backup.</p>
+          <p class="hint">Download your Profile, all Applications, and settings as a JSON backup.</p>
           <button id="exportBtn" class="btn">Export JSON</button>
         </div>
         <div class="card">
@@ -180,7 +196,7 @@
         </div>
         <div class="card danger">
           <h3>Reset</h3>
-          <p class="hint">Delete every profile, answer, and setting.</p>
+          <p class="hint">Delete your Profile, every Application, answer, and setting.</p>
           <button id="resetBtn" class="btn btn-danger">Reset all data</button>
         </div>
       </section>

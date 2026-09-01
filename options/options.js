@@ -1,11 +1,13 @@
 /**
  * options/options.js
  *
- * Settings page controller. Handles three main views:
- *   1. Profiles — create, rename, delete, set active
- *   2. Answers  — view/edit/delete saved answers, grouped by site or flat table
- *   3. AI Settings — manage LLM connections (create, edit, delete, test, set active)
- *   4. Data — export/import/reset all extension data
+ * Settings page controller. Handles four main views:
+ *   1. Profile — the shared identity answers (name, phone, education, ...)
+ *      reused across every Application; a flat, single-record editor
+ *   2. Applications — create, rename, delete, set active
+ *   3. Answers  — view/edit/delete an Application's saved answers, grouped by site or flat table
+ *   4. AI Settings — manage LLM connections (create, edit, delete, test, set active)
+ *   5. Data — export/import/reset all extension data
  *
  * Also renders a plan banner at the top showing account status and plan limits.
  */
@@ -17,13 +19,14 @@
   /* ── Page state (mirrors what's in chrome.storage) ── */
 
   const state = {
-    profiles: [],
-    activeProfileId: null,
+    applications: [],
+    activeApplicationId: null,
     connections: [],
     activeConnectionId: null,
     editingConnectionId: null,  // Which connection is loaded into the AI form
-    answersProfileId: null,     // Which profile's answers are being viewed
+    answersApplicationId: null, // Which application's answers are being viewed
     answers: [],
+    profileAnswers: [],         // The shared Profile's answers (flat list, no site grouping)
     search: "",                 // Current search filter for answers
     answersView: "all",         // "all" (flat table) or "sites" (grouped cards)
     expandedSites: new Set(),   // Which site cards are expanded in sites view
@@ -93,12 +96,12 @@
 
   /* ── State loading ── */
 
-  /** Load all state from background (profiles, connections, active IDs) */
+  /** Load all state from background (applications, connections, active IDs) */
   async function loadState() {
     const res = await sendMsg({ type: "getState" });
     if (res.ok) {
-      state.profiles = res.data.profiles;
-      state.activeProfileId = res.data.activeProfileId;
+      state.applications = res.data.applications;
+      state.activeApplicationId = res.data.activeApplicationId;
       state.connections = res.data.connections;
       state.activeConnectionId = res.data.activeConnectionId;
       state.autoSaveDetection = res.data.autoSaveDetection === true;
@@ -110,11 +113,11 @@
       if (state.editingConnectionId && !state.connections.some((c) => c.id === state.editingConnectionId)) {
         state.editingConnectionId = state.activeConnectionId || state.connections[0]?.id || null;
       }
-      if (!state.answersProfileId) {
-        state.answersProfileId = state.activeProfileId || (state.profiles[0] && state.profiles[0].id);
+      if (!state.answersApplicationId) {
+        state.answersApplicationId = state.activeApplicationId || (state.applications[0] && state.applications[0].id);
       }
-      if (state.answersProfileId && !state.profiles.some((p) => p.id === state.answersProfileId)) {
-        state.answersProfileId = state.profiles[0]?.id || null;
+      if (state.answersApplicationId && !state.applications.some((p) => p.id === state.answersApplicationId)) {
+        state.answersApplicationId = state.applications[0]?.id || null;
       }
     }
   }
@@ -170,11 +173,11 @@
     const text = document.createElement("span");
     if (paid) {
       const until = new Date(account.planExpiresAt).toLocaleDateString();
-      text.textContent = `Pro plan — unlimited profiles and answers until ${until}.`;
+      text.textContent = `Pro plan — unlimited applications and answers until ${until}.`;
     } else if (account.signedIn) {
-      text.textContent = `${account.name || account.email} · Free plan: unlimited profiles and answers.`;
+      text.textContent = `${account.name || account.email} · Free plan: unlimited applications and answers.`;
     } else {
-      text.textContent = "Local mode · Unlimited profiles and answers.";
+      text.textContent = "Local mode · Unlimited applications and answers.";
     }
 
     const badge = document.createElement("span");
@@ -199,16 +202,22 @@
 
   /* ── Answers loading ── */
 
-  /** Load answers for the currently selected profile into state.answers */
+  /** Load answers for the currently selected Application into state.answers */
   async function loadAnswers() {
-    if (!state.answersProfileId) {
+    if (!state.answersApplicationId) {
       state.answers = [];
       return;
     }
-    const res = await sendMsg({ type: "getProfile", profileId: state.answersProfileId });
+    const res = await sendMsg({ type: "getApplication", applicationId: state.answersApplicationId });
     if (res.ok) {
       state.answers = Object.entries(res.data.answers || {}).map(([key, a]) => ({ key, ...a }));
     }
+  }
+
+  /** Load the shared Profile's answers into state.profileAnswers */
+  async function loadProfileAnswers() {
+    const res = await sendMsg({ type: "getUserProfile" });
+    state.profileAnswers = res.ok ? Object.entries(res.data.answers || {}).map(([key, a]) => ({ key, ...a })) : [];
   }
 
   /** Format a timestamp as a human-readable relative time ("3m ago", "2d ago", etc.) */
@@ -241,19 +250,19 @@
     });
   });
 
-  /* ── Profiles view ── */
+  /* ── Applications view ── */
 
-  /** Render the list of profiles with Set active / Rename / Delete actions */
-  function renderProfiles() {
-    const list = $("profileList");
+  /** Render the list of applications with Set active / Rename / Delete actions */
+  function renderApplications() {
+    const list = $("applicationList");
     list.innerHTML = "";
-    $("profilesEmpty").classList.toggle("hidden", state.profiles.length > 0);
-    for (const p of state.profiles) {
+    $("applicationsEmpty").classList.toggle("hidden", state.applications.length > 0);
+    for (const p of state.applications) {
       const li = document.createElement("li");
-      li.classList.toggle("active", p.id === state.activeProfileId);
+      li.classList.toggle("active", p.id === state.activeApplicationId);
 
       const name = document.createElement("span");
-      name.className = "profile-name";
+      name.className = "application-name";
       name.textContent = p.name;
 
       const count = document.createElement("span");
@@ -267,12 +276,12 @@
       const actions = document.createElement("div");
       actions.className = "row-actions";
 
-      if (p.id !== state.activeProfileId) {
+      if (p.id !== state.activeApplicationId) {
         const setBtn = document.createElement("button");
         setBtn.className = "btn btn-small";
         setBtn.textContent = "Set active";
         setBtn.addEventListener("click", async () => {
-          await sendMsg({ type: "setActiveProfile", profileId: p.id });
+          await sendMsg({ type: "setActiveApplication", applicationId: p.id });
           await refresh();
         });
         actions.appendChild(setBtn);
@@ -284,9 +293,9 @@
       renameBtn.className = "btn btn-small";
       renameBtn.textContent = "Rename";
       renameBtn.addEventListener("click", async () => {
-        const name2 = prompt("Profile name:", p.name);
+        const name2 = prompt("Application name:", p.name);
         if (!name2) return;
-        await sendMsg({ type: "renameProfile", profileId: p.id, name: name2 });
+        await sendMsg({ type: "renameApplication", applicationId: p.id, name: name2 });
         await refresh();
       });
       actions.appendChild(renameBtn);
@@ -295,9 +304,9 @@
       delBtn.className = "btn btn-small btn-danger";
       delBtn.textContent = "Delete";
       delBtn.addEventListener("click", async () => {
-        if (!confirm(`Delete profile "${p.name}" and all its answers?`)) return;
-        await sendMsg({ type: "deleteProfile", profileId: p.id });
-        if (state.answersProfileId === p.id) state.answersProfileId = null;
+        if (!confirm(`Delete application "${p.name}" and all its answers?`)) return;
+        await sendMsg({ type: "deleteApplication", applicationId: p.id });
+        if (state.answersApplicationId === p.id) state.answersApplicationId = null;
         await refresh();
       });
       actions.appendChild(delBtn);
@@ -307,10 +316,10 @@
     }
   }
 
-  $("addProfileBtn").addEventListener("click", async () => {
-    const name = prompt("New profile name:", "New Profile");
+  $("addApplicationBtn").addEventListener("click", async () => {
+    const name = prompt("New application name:", "New Application");
     if (!name) return;
-    const res = await sendMsg({ type: "createProfile", name });
+    const res = await sendMsg({ type: "createApplication", name });
     if (res.ok) await refresh();
     else alert(res.error);
   });
@@ -371,18 +380,18 @@
 
   /* ── Answers view ── */
 
-  /** Populate the profile selector in the answers view */
+  /** Populate the application selector in the answers view */
   function renderAnswersSelect() {
-    const sel = $("answersProfileSelect");
+    const sel = $("answersApplicationSelect");
     sel.innerHTML = "";
-    for (const p of state.profiles) {
+    for (const p of state.applications) {
       const opt = document.createElement("option");
       opt.value = p.id;
       opt.textContent = p.name;
       sel.appendChild(opt);
     }
-    sel.value = state.answersProfileId || "";
-    sel.disabled = state.profiles.length === 0;
+    sel.value = state.answersApplicationId || "";
+    sel.disabled = state.applications.length === 0;
   }
 
   /** Get the display label for an answer (question text or normalised key) */
@@ -393,9 +402,12 @@
   /**
    * Build a single answer card element.
    * @param {Object} a - answer object
-   * @param {Object} [opts] - { compact: bool } for inside site cards
+   * @param {Object} [opts] - { compact: bool } for inside site cards,
+   *   { scope: "application" | "profile" } for which store the card's Edit/Delete
+   *   actions write back to (defaults to "application")
    */
   function buildAnswerCard(a, opts) {
+    const scope = opts?.scope || "application";
     const card = document.createElement("div");
     card.className = "answer-card";
 
@@ -455,7 +467,11 @@
     delBtn.textContent = "Delete";
     delBtn.addEventListener("click", async () => {
       if (!confirm(`Delete answer for "${questionLabel(a)}"?`)) return;
-      await sendMsg({ type: "deleteAnswer", profileId: state.answersProfileId, key: a.key });
+      await sendMsg(
+        scope === "profile"
+          ? { type: "deleteProfileAnswer", key: a.key }
+          : { type: "deleteAnswer", applicationId: state.answersApplicationId, key: a.key }
+      );
       await refresh();
     });
 
@@ -484,17 +500,22 @@
         const newQuestion = keyInput.value.trim();
         const newVal = valInput.value.trim();
         if (!newQuestion || !newVal) return;
-        const res = await sendMsg({
-          type: "saveAnswers",
-          profileId: state.answersProfileId,
-          pairs: [{ key: newQuestion, value: newVal, source: "manual", question: newQuestion }]
-        });
+        const pair = { key: newQuestion, value: newVal, source: "manual", question: newQuestion };
+        const res = await sendMsg(
+          scope === "profile"
+            ? { type: "saveProfileAnswers", pairs: [pair] }
+            : { type: "saveAnswers", applicationId: state.answersApplicationId, pairs: [pair] }
+        );
         if (!res.ok) {
           alert(res.error);
           return;
         }
         if (newQuestion !== a.key && newQuestion !== (a.question || a.key)) {
-          await sendMsg({ type: "deleteAnswer", profileId: state.answersProfileId, key: a.key });
+          await sendMsg(
+            scope === "profile"
+              ? { type: "deleteProfileAnswer", key: a.key }
+              : { type: "deleteAnswer", applicationId: state.answersApplicationId, key: a.key }
+          );
         }
         await refresh();
       });
@@ -502,7 +523,7 @@
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "btn btn-small";
       cancelBtn.textContent = "Cancel";
-      cancelBtn.addEventListener("click", renderAnswers);
+      cancelBtn.addEventListener("click", scope === "profile" ? renderProfileAnswers : renderAnswers);
 
       actions.textContent = "";
       actions.append(saveBtn, cancelBtn);
@@ -559,12 +580,12 @@
 
     $("answersEmpty").classList.toggle(
       "hidden",
-      state.profiles.length > 0 && filtered.length > 0
+      state.applications.length > 0 && filtered.length > 0
     );
     $("answersEmpty").textContent =
-      state.profiles.length === 0
-        ? "Create a profile first to save answers."
-        : "No answers saved in this profile yet.";
+      state.applications.length === 0
+        ? "Create an application first to save answers."
+        : "No answers saved in this application yet.";
 
     for (const a of filtered) {
       list.appendChild(buildAnswerCard(a));
@@ -636,7 +657,7 @@
       ) return;
       const res = await sendMsg({
         type: "deleteSiteCollection",
-        profileId: state.answersProfileId,
+        applicationId: state.answersApplicationId,
         site
       });
       if (!res.ok) {
@@ -688,7 +709,7 @@
     if (state.answers.length === 0) {
       const div = document.createElement("div");
       div.className = "empty";
-      div.textContent = "No answers saved in this profile yet.";
+      div.textContent = "No answers saved in this application yet.";
       wrap.appendChild(div);
       return;
     }
@@ -707,13 +728,19 @@
     }
   }
 
-  /** Add a blank answer card to the top of the list for manual entry */
-  function addAnswerRow() {
-    if (!state.answersProfileId) {
-      alert("Create a profile first.");
+  /**
+   * Add a blank answer card to the top of the list for manual entry.
+   * @param {"application"|"profile"} [scope] - which store Save writes to
+   *   and which list element to insert into (defaults to "application")
+   */
+  function addAnswerRow(scope) {
+    scope = scope || "application";
+    const listId = scope === "profile" ? "profileAnswersList" : "answersList";
+    if (scope === "application" && !state.answersApplicationId) {
+      alert("Create an application first.");
       return;
     }
-    const list = $("answersList");
+    const list = $(listId);
     if (list.querySelector(".new-answer")) return;
 
     const card = document.createElement("div");
@@ -749,11 +776,12 @@
       const key = keyInput.value.trim();
       const val = valInput.value.trim();
       if (!key || !val) return;
-      const res = await sendMsg({
-        type: "saveAnswers",
-        profileId: state.answersProfileId,
-        pairs: [{ key, value: val, source: "manual", question: key }]
-      });
+      const pair = { key, value: val, source: "manual", question: key };
+      const res = await sendMsg(
+        scope === "profile"
+          ? { type: "saveProfileAnswers", pairs: [pair] }
+          : { type: "saveAnswers", applicationId: state.answersApplicationId, pairs: [pair] }
+      );
       if (!res.ok) {
         alert(res.error);
         return;
@@ -764,7 +792,7 @@
     const cancelBtn = document.createElement("button");
     cancelBtn.className = "btn btn-small";
     cancelBtn.textContent = "Cancel";
-    cancelBtn.addEventListener("click", renderAnswers);
+    cancelBtn.addEventListener("click", scope === "profile" ? renderProfileAnswers : renderAnswers);
 
     actions.append(saveBtn, cancelBtn);
     row.append(text, actions);
@@ -772,9 +800,9 @@
     list.insertBefore(card, list.firstChild);
   }
 
-  // Profile selector in answers view
-  $("answersProfileSelect").addEventListener("change", (e) => {
-    state.answersProfileId = e.target.value || null;
+  // Application selector in answers view
+  $("answersApplicationSelect").addEventListener("change", (e) => {
+    state.answersApplicationId = e.target.value || null;
     loadAnswers().then(renderAnswers);
   });
 
@@ -799,6 +827,20 @@
     state.search = e.target.value;
     renderAnswers();
   });
+
+  /* ── Profile view (shared identity answers, reused across every Application) ── */
+
+  /** Render the shared Profile's flat answer list (no site grouping — see loadProfileAnswers) */
+  function renderProfileAnswers() {
+    const list = $("profileAnswersList");
+    list.innerHTML = "";
+    $("profileAnswersEmpty").classList.toggle("hidden", state.profileAnswers.length > 0);
+    for (const a of state.profileAnswers) {
+      list.appendChild(buildAnswerCard(a, { scope: "profile", compact: true }));
+    }
+  }
+
+  $("addProfileAnswerBtn").addEventListener("click", () => addAnswerRow("profile"));
 
   /* ── AI Settings view ── */
 
@@ -966,7 +1008,7 @@
 
   /* ── Data management ── */
 
-  /** Export all profile/answer data as a downloadable JSON file */
+  /** Export all Profile/Application answer data as a downloadable JSON file */
   async function exportData() {
     try {
       const all = await chrome.storage.local.get("formauto");
@@ -1007,7 +1049,7 @@
 
   // Reset: wipe everything
   $("resetBtn").addEventListener("click", async () => {
-    if (!confirm("Delete ALL profiles, answers, and settings? This cannot be undone.")) return;
+    if (!confirm("Delete your Profile, ALL applications, answers, and settings? This cannot be undone.")) return;
     try {
       await chrome.storage.local.remove("formauto");
       await refresh();
@@ -1023,8 +1065,10 @@
     renderPlanBanner();
     await loadAiUsage();
     renderAiUsage();
+    await loadProfileAnswers();
+    renderProfileAnswers();
     await loadState();
-    renderProfiles();
+    renderApplications();
     renderAutoDetectToggle();
     renderFormModeControl();
     renderSuggestMaxRetries();

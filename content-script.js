@@ -4,7 +4,8 @@
  * Injected into every web page via MV3 content_scripts.
  * Responsibilities:
  *   1. Detect form fields and read their labels/placeholders for question text.
- *   2. Match on-page questions against saved answers in the active profile.
+ *   2. Match on-page questions against saved answers in the active
+ *      application (merged with the shared Profile's identity answers).
  *   3. Apply matched values to empty fields (heuristic token-set matching).
  *   4. Optionally use LLM semantic matching for unmatched fields (manual "Autofill now" only).
  *   5. Learn new answers while the user types (auto-save via debounced flush).
@@ -38,7 +39,7 @@
   ]);
 
   /* ── Shared mutable state ── */
-  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, formDetectionMode: "manual", activeProfileId: null, suggestMaxRetries: 3 };
+  const state = { autofillEnabled: false, autoSaveTyping: false, autoSaveDetection: false, formDetectionMode: "manual", activeApplicationId: null, suggestMaxRetries: 3 };
 
   /** Hostname of the current page, stored with every saved answer */
   const PAGE_SITE = location.hostname || null;
@@ -90,7 +91,7 @@
     });
   }
 
-  /** Pull the latest shared state (autofill toggle, active profile, etc.) */
+  /** Pull the latest shared state (autofill toggle, active application, etc.) */
   async function refreshState() {
     const r = await sendMsg({ type: "getState" });
     if (r.ok) {
@@ -98,14 +99,17 @@
       state.autoSaveTyping = r.data.autoSaveTyping !== false;
       state.autoSaveDetection = r.data.autoSaveDetection === true;
       state.formDetectionMode = r.data.formDetectionMode === "auto" ? "auto" : "manual";
-      state.activeProfileId = r.data.activeProfileId || null;
+      state.activeApplicationId = r.data.activeApplicationId || null;
       state.suggestMaxRetries = Number.isFinite(r.data.suggestMaxRetries) ? r.data.suggestMaxRetries : 3;
     }
   }
 
-  /** Fetch the full profile object (including answers map) by id */
-  async function getProfile(id) {
-    const r = await sendMsg({ type: "getProfile", profileId: id });
+  /**
+   * Fetch the full application object (including its answers map, merged
+   * with the shared Profile's answers underneath) by id.
+   */
+  async function getApplication(id) {
+    const r = await sendMsg({ type: "getApplicationForFill", applicationId: id });
     return r.ok ? r.data : null;
   }
 
@@ -564,7 +568,7 @@
 
   /**
    * Send all accumulated pending answer pairs to background.js for storage.
-   * Clears the pending map. If no active profile, discards everything.
+   * Clears the pending map. If no active application, discards everything.
    */
   function flushPending() {
     if (flushTimer) {
@@ -572,7 +576,7 @@
       flushTimer = null;
     }
     if (!pending.size) return;
-    if (!state.activeProfileId) {
+    if (!state.activeApplicationId) {
       pending.clear();
       return;
     }
@@ -580,7 +584,7 @@
     pending.clear();
     sendMsg({
       type: "saveAnswers",
-      profileId: state.activeProfileId,
+      applicationId: state.activeApplicationId,
       pairs: pairs.map((p) => ({ ...p, site: PAGE_SITE, siteName: PAGE_NAME }))
     }).catch((err) => console.warn("[autoForm]", (err && err.message) || "Failed to save answers"));
   }
@@ -621,10 +625,10 @@
     opts = opts || {};
     await refreshState();
     if (!opts.manual && !state.autofillEnabled) return;
-    const profile = await getProfile(state.activeProfileId);
-    if (!profile) return;
+    const application = await getApplication(state.activeApplicationId);
+    if (!application) return;
     lastFillCount = 0;
-    const answers = profile.answers || {};
+    const answers = application.answers || {};
     const keys = Object.keys(answers);
     if (!keys.length) return;
 
@@ -638,7 +642,7 @@
       if (hasExistingValue(el)) continue;
       const labelKey = normalizeKey(getLabel(el));
       const nameKey = normalizeKey(el.getAttribute("name") || el.id);
-      const answer = matchAnswer(profile, labelKey, nameKey);
+      const answer = matchAnswer(application, labelKey, nameKey);
       if (answer) {
         fillPlan.push({ el, answer });
         continue;
@@ -677,7 +681,7 @@
     try {
       const res = await sendMsg({
         type: "matchSavedAnswers",
-        profileId: state.activeProfileId,
+        applicationId: state.activeApplicationId,
         fields: toMatch.map(({ el, ...rest }) => rest)
       });
       if (!res.ok) throw new Error(res.error);
@@ -715,8 +719,8 @@
    * Called on form submit and via the "Save this page's answers" button.
    */
   async function captureForm(form) {
-    if (!state.activeProfileId) await refreshState();
-    if (!state.activeProfileId) return;
+    if (!state.activeApplicationId) await refreshState();
+    if (!state.activeApplicationId) return;
     const scope = form ? form : document;
     const pairs = Array.from(scope.querySelectorAll(FIELD_SELECTOR))
       .filter(isEligible)
@@ -728,7 +732,7 @@
       })
       .filter(Boolean);
     if (pairs.length) {
-      await sendMsg({ type: "saveAnswers", profileId: state.activeProfileId, pairs });
+      await sendMsg({ type: "saveAnswers", applicationId: state.activeApplicationId, pairs });
     }
   }
 
@@ -853,7 +857,7 @@
   /** Ask the user to confirm before saving answers on a detected relevant form. At most once per hour per site. */
   function showSaveConfirmation() {
     return showConfirmationBanner({
-      message: "autoForm detected a form relevant to your profile. Start saving your answers?",
+      message: "autoForm detected a form relevant to your saved answers. Start saving your answers?",
       throttleKey: "save",
       confirmLabel: "\u2713 Save",
       dismissLabel: "\u2715 Not now"
@@ -1024,11 +1028,11 @@
    * checks `loading.cancelled` before and after every request so a user can
    * bail out at any point via the loading indicator's Cancel button.
    */
-  async function suggestAnswerWithRetry(profileId, field, loading) {
+  async function suggestAnswerWithRetry(applicationId, field, loading) {
     const maxAttempts = Math.max(1, state.suggestMaxRetries || 3);
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (loading.cancelled) return { cancelled: true };
-      const res = await sendMsg({ type: "suggestAnswers", profileId, fields: [field] });
+      const res = await sendMsg({ type: "suggestAnswers", applicationId, fields: [field] });
       if (loading.cancelled) return { cancelled: true };
 
       const item = res.ok && res.data ? res.data[0] : null;
@@ -1202,7 +1206,7 @@
 
   /**
    * Determine whether the current page is a fillable form relevant to any
-   * saved profile. Runs at most once per page load. If both isForm and
+   * saved application. Runs at most once per page load. If both isForm and
    * relevant come back true, either enables saving immediately (auto mode)
    * or prompts the user first (manual mode, the default).
    */
@@ -1235,18 +1239,18 @@
 
   /**
    * "Suggest with AI" pipeline — reviews every eligible empty field one at a
-   * time. For each field, finds a candidate answer (an exact saved-profile
+   * time. For each field, finds a candidate answer (an exact saved-answer
    * match first, an LLM guess otherwise), shows it in an editable preview
    * anchored to the field (see showFieldPreview above), and only fills it
    * in once the user accepts.
    */
   async function suggestAll() {
     await refreshState();
-    if (!state.activeProfileId) {
-      return { ok: false, error: "No active profile. Create or select one in the autoForm popup." };
+    if (!state.activeApplicationId) {
+      return { ok: false, error: "No active application. Create or select one in the autoForm popup." };
     }
-    const profile = await getProfile(state.activeProfileId);
-    if (!profile) return { ok: false, error: "Active profile could not be loaded." };
+    const application = await getApplication(state.activeApplicationId);
+    if (!application) return { ok: false, error: "Active application could not be loaded." };
 
     const fields = visibleEligibleFields();
     let accepted = 0;
@@ -1262,19 +1266,19 @@
       const nameKey = normalizeKey(el.getAttribute("name") || el.id);
       const key = labelKey || nameKey;
 
-      const profileAnswer = matchAnswer(profile, labelKey, nameKey);
+      const savedAnswer = matchAnswer(application, labelKey, nameKey);
       let value;
       let source;
       let loadingAnchor = null;
 
-      if (profileAnswer) {
-        value = profileAnswer.value;
-        source = "profile";
+      if (savedAnswer) {
+        value = savedAnswer.value;
+        source = "saved";
       } else {
         const loading = showFieldLoading(el);
         loadingAnchor = loading.anchor;
         const outcome = await suggestAnswerWithRetry(
-          state.activeProfileId,
+          state.activeApplicationId,
           { key, question, fieldType: fieldType(el), options: optionsFor(el) },
           loading
         );
@@ -1332,10 +1336,10 @@
   }
 
   /**
-   * Handle a "Suggest AI answer" / "Prefill from profile" right-click on a
-   * single field (see the "contextmenu" listener and background.js's
+   * Handle a "Suggest AI answer" / "Prefill from saved answers" right-click
+   * on a single field (see the "contextmenu" listener and background.js's
    * context-menu setup). `useAI` true always asks the LLM; false looks up
-   * an exact saved-profile match only (no LLM call). Either way the result
+   * an exact saved-answer match only (no LLM call). Either way the result
    * goes through the same editable, anchored preview as "Suggest with AI",
    * unlike that bulk flow this bypasses the already-filled/already-touched
    * checks, since the user explicitly targeted this one field.
@@ -1347,11 +1351,11 @@
     }
 
     await refreshState();
-    if (!state.activeProfileId) {
-      return { ok: false, error: "No active profile. Create or select one in the autoForm popup." };
+    if (!state.activeApplicationId) {
+      return { ok: false, error: "No active application. Create or select one in the autoForm popup." };
     }
-    const profile = await getProfile(state.activeProfileId);
-    if (!profile) return { ok: false, error: "Active profile could not be loaded." };
+    const application = await getApplication(state.activeApplicationId);
+    if (!application) return { ok: false, error: "Active application could not be loaded." };
 
     const question = await resolveQuestion(el);
     const labelKey = normalizeKey(question);
@@ -1363,18 +1367,18 @@
     let loadingAnchor = null;
 
     if (!useAI) {
-      const profileAnswer = matchAnswer(profile, labelKey, nameKey);
-      if (!profileAnswer) {
+      const savedAnswer = matchAnswer(application, labelKey, nameKey);
+      if (!savedAnswer) {
         showFieldMessage(el, "No saved answer found for this field.", true);
         return { ok: false, error: "No saved answer found for this field." };
       }
-      value = profileAnswer.value;
-      source = "profile";
+      value = savedAnswer.value;
+      source = "saved";
     } else {
       const loading = showFieldLoading(el);
       loadingAnchor = loading.anchor;
       const outcome = await suggestAnswerWithRetry(
-        state.activeProfileId,
+        state.activeApplicationId,
         { key, question, fieldType: fieldType(el), options: optionsFor(el) },
         loading
       );
@@ -1464,10 +1468,10 @@
     const next = c.newValue || {};
     state.autoSaveDetection = next.autoSaveDetection === true;
     state.formDetectionMode = next.formDetectionMode === "auto" ? "auto" : "manual";
-    // Re-run autofill when the active profile or toggle changes
+    // Re-run autofill when the active application or toggle changes
     if (
       next.autofillEnabled !== prev.autofillEnabled ||
-      next.activeProfileId !== prev.activeProfileId
+      next.activeApplicationId !== prev.activeApplicationId
     ) {
       scheduleAutofill(200);
     }
