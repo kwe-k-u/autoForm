@@ -8,16 +8,16 @@ installImportScripts();
 
 const background = require("../background.js");
 
-async function seedProfile(profileId) {
+async function seedApplication(applicationId) {
   const state = await background.getState();
-  state.profiles[profileId] = { id: profileId, name: "Test", createdAt: 1, updatedAt: 1, answers: {} };
+  state.applications[applicationId] = { id: applicationId, name: "Test", createdAt: 1, updatedAt: 1, answers: {} };
   await background.persistState(state);
 }
 
 /** Temporarily force FFAccount.planFor to return a finite-limit plan */
 async function withFinitePlan(maxAnswers, fn) {
   const original = global.FFAccount.planFor;
-  global.FFAccount.planFor = () => ({ key: "free", label: "Free", maxProfiles: 1, maxAnswers });
+  global.FFAccount.planFor = () => ({ key: "free", label: "Free", maxApplications: 1, maxAnswers });
   try {
     await fn();
   } finally {
@@ -25,57 +25,362 @@ async function withFinitePlan(maxAnswers, fn) {
   }
 }
 
-describe("saveAnswers plan-limit enforcement", () => {
+/** Set the stored account (getAccount()'s source) to a paid + cloud-sync account by default. */
+async function setAccount(overrides) {
+  await chrome.storage.local.set({
+    formautoAccount: Object.assign(
+      { mode: "cloud", signedIn: true, tier: "paid", planExpiresAt: Date.now() + 1000000, dataStorage: "cloud" },
+      overrides
+    )
+  });
+}
+
+async function clearAccount() {
+  await chrome.storage.local.remove("formautoAccount");
+}
+
+/** Mock global.fetch as an LLM that flags EVERY candidate id it was asked about (isolates runAutoPromote's own same-value/conflict filtering from the LLM's judgment). */
+function mockLLMFlagAllCandidates() {
+  return jest.fn(async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    const userMsg = body.messages.find((m) => m.role === "user").content;
+    const ids = Array.from(userMsg.matchAll(/^(\d+):/gm)).map((m) => Number(m[1]));
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(ids) } }] }) };
+  });
+}
+
+describe("saveApplicationAnswers plan-limit enforcement", () => {
   test("throws once a finite plan's answer cap would be exceeded", async () => {
     await withFinitePlan(2, async () => {
-      await seedProfile("cap-1");
-      await background.saveAnswers("cap-1", [
+      await seedApplication("cap-1");
+      await background.saveApplicationAnswers("cap-1", [
         { key: "email", value: "a@b.com" },
         { key: "name", value: "Jane" }
       ]);
       await expect(
-        background.saveAnswers("cap-1", [{ key: "phone", value: "12345" }])
+        background.saveApplicationAnswers("cap-1", [{ key: "phone", value: "12345" }])
       ).rejects.toThrow(/Free plan limit reached/);
     });
   });
 
   test("updating an existing key doesn't count against the cap", async () => {
     await withFinitePlan(2, async () => {
-      await seedProfile("cap-2");
-      await background.saveAnswers("cap-2", [
+      await seedApplication("cap-2");
+      await background.saveApplicationAnswers("cap-2", [
         { key: "email", value: "a@b.com" },
         { key: "name", value: "Jane" }
       ]);
       await expect(
-        background.saveAnswers("cap-2", [{ key: "email", value: "updated@b.com" }])
+        background.saveApplicationAnswers("cap-2", [{ key: "email", value: "updated@b.com" }])
       ).resolves.toEqual({ saved: true });
     });
   });
 
   test("deleting a key (empty value) frees up room under the cap", async () => {
     await withFinitePlan(2, async () => {
-      await seedProfile("cap-3");
-      await background.saveAnswers("cap-3", [
+      await seedApplication("cap-3");
+      await background.saveApplicationAnswers("cap-3", [
         { key: "email", value: "a@b.com" },
         { key: "name", value: "Jane" }
       ]);
-      await background.saveAnswers("cap-3", [{ key: "name", value: "" }]);
+      await background.saveApplicationAnswers("cap-3", [{ key: "name", value: "" }]);
       await expect(
-        background.saveAnswers("cap-3", [{ key: "phone", value: "12345" }])
+        background.saveApplicationAnswers("cap-3", [{ key: "phone", value: "12345" }])
       ).resolves.toEqual({ saved: true });
     });
   });
 
-  test("throws for an unknown profile", async () => {
+  test("throws for an unknown application", async () => {
     await expect(
-      background.saveAnswers("does-not-exist", [{ key: "a", value: "b" }])
-    ).rejects.toThrow("Profile not found");
+      background.saveApplicationAnswers("does-not-exist", [{ key: "a", value: "b" }])
+    ).rejects.toThrow("Application not found");
   });
 
   test("no cap is enforced under the real Infinity-limit plans", async () => {
-    await seedProfile("nocap");
+    await seedApplication("nocap");
     const pairs = Array.from({ length: 50 }, (_, i) => ({ key: `field_${i}`, value: `v${i}` }));
-    await expect(background.saveAnswers("nocap", pairs)).resolves.toEqual({ saved: true });
+    await expect(background.saveApplicationAnswers("nocap", pairs)).resolves.toEqual({ saved: true });
+  });
+});
+
+describe("Profile answers CRUD (shared identity answers)", () => {
+  test("getUserProfile starts out empty", async () => {
+    await background.persistState(background.defaultState());
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers).toEqual({});
+  });
+
+  test("saveProfileAnswers upserts into the shared Profile, not any Application", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("app-1");
+    await background.saveProfileAnswers([{ key: "full_name", value: "Jane Doe" }]);
+
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.full_name.value).toBe("Jane Doe");
+
+    const application = await background.handleMessage({ type: "getApplication", applicationId: "app-1" });
+    expect(application.answers.full_name).toBeUndefined();
+  });
+
+  test("deleteProfileAnswer removes a single shared answer", async () => {
+    await background.persistState(background.defaultState());
+    await background.saveProfileAnswers([{ key: "phone", value: "555-1234" }]);
+    await background.deleteProfileAnswer("phone");
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.phone).toBeUndefined();
+  });
+
+  test("saveProfileAnswers respects the plan's finite maxAnswers cap", async () => {
+    await withFinitePlan(1, async () => {
+      await background.persistState(background.defaultState());
+      await background.saveProfileAnswers([{ key: "full_name", value: "Jane Doe" }]);
+      await expect(
+        background.saveProfileAnswers([{ key: "phone", value: "555-1234" }])
+      ).rejects.toThrow(/Free plan limit reached/);
+    });
+  });
+});
+
+describe("getEffectiveApplication (Profile + Application merge)", () => {
+  test("an Application with no saved answer still sees the shared Profile's answer", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("merge-1");
+    await background.saveProfileAnswers([{ key: "email", value: "shared@example.com" }]);
+
+    const state = await background.getState();
+    const effective = background.getEffectiveApplication(state, "merge-1");
+    expect(effective.answers.email.value).toBe("shared@example.com");
+  });
+
+  test("an Application-owned key wins over a same-named Profile key", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("merge-2");
+    await background.saveProfileAnswers([{ key: "email", value: "shared@example.com" }]);
+    await background.saveApplicationAnswers("merge-2", [{ key: "email", value: "app-specific@example.com" }]);
+
+    const state = await background.getState();
+    const effective = background.getEffectiveApplication(state, "merge-2");
+    expect(effective.answers.email.value).toBe("app-specific@example.com");
+  });
+
+  test("returns null for an unknown application", async () => {
+    await background.persistState(background.defaultState());
+    const state = await background.getState();
+    expect(background.getEffectiveApplication(state, "nope")).toBeNull();
+  });
+});
+
+describe("moveAnswerToProfile", () => {
+  test("moves a saved answer from an Application into the shared Profile", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("move-1");
+    await background.saveApplicationAnswers("move-1", [{ key: "phone", value: "555-1234", question: "Phone" }]);
+
+    await background.moveAnswerToProfile("move-1", "phone");
+
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.phone.value).toBe("555-1234");
+    const application = await background.handleMessage({ type: "getApplication", applicationId: "move-1" });
+    expect(application.answers.phone).toBeUndefined();
+  });
+
+  test("overwrites whatever's already at that key in Profile (explicit user action)", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("move-2");
+    await background.saveProfileAnswers([{ key: "email", value: "old@example.com" }]);
+    await background.saveApplicationAnswers("move-2", [{ key: "email", value: "new@example.com" }]);
+
+    await background.moveAnswerToProfile("move-2", "email");
+
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.email.value).toBe("new@example.com");
+  });
+
+  test("throws for an unknown application", async () => {
+    await expect(background.moveAnswerToProfile("does-not-exist", "phone")).rejects.toThrow("Application not found");
+  });
+
+  test("throws for an unknown answer key", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("move-3");
+    await expect(background.moveAnswerToProfile("move-3", "nope")).rejects.toThrow("Answer not found");
+  });
+});
+
+describe("answersSinceLastRun counting (weekly AI sweep trigger)", () => {
+  test("a genuinely new key increments the counter", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("count-1");
+    await background.saveApplicationAnswers("count-1", [
+      { key: "a", value: "1" },
+      { key: "b", value: "2" }
+    ]);
+    const state = await background.getState();
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(2);
+  });
+
+  test("updating an existing key does not increment the counter", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("count-2");
+    await background.saveApplicationAnswers("count-2", [{ key: "a", value: "1" }]);
+    await background.saveApplicationAnswers("count-2", [{ key: "a", value: "1-updated" }]);
+    const state = await background.getState();
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(1);
+  });
+
+  test("saving to the shared Profile does not increment the counter", async () => {
+    await background.persistState(background.defaultState());
+    await background.saveProfileAnswers([{ key: "c", value: "3" }]);
+    const state = await background.getState();
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(0);
+  });
+});
+
+describe("runAutoPromote (weekly AI sweep)", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  test("promotes a key to Profile and removes it from every Application, when all agree on the same value", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-a");
+    await seedApplication("sweep-b");
+    await background.saveApplicationAnswers("sweep-a", [{ key: "email", value: "shared@example.com", question: "Email" }]);
+    await background.saveApplicationAnswers("sweep-b", [{ key: "email", value: "shared@example.com", question: "Email" }]);
+    await background.handleMessage({ type: "createConnection", provider: "OpenAI", name: "OpenAI", apiKey: "sk-test" });
+    global.fetch = mockLLMFlagAllCandidates();
+
+    const state = await background.getState();
+    const result = await background.runAutoPromote(state);
+
+    expect(result.promoted).toBe(1);
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.email.value).toBe("shared@example.com");
+    const appA = await background.handleMessage({ type: "getApplication", applicationId: "sweep-a" });
+    const appB = await background.handleMessage({ type: "getApplication", applicationId: "sweep-b" });
+    expect(appA.answers.email).toBeUndefined();
+    expect(appB.answers.email).toBeUndefined();
+  });
+
+  test("leaves a key in place on every Application when they disagree on its value, even if the LLM flags it", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-c");
+    await seedApplication("sweep-d");
+    await background.saveApplicationAnswers("sweep-c", [{ key: "email", value: "one@example.com", question: "Email" }]);
+    await background.saveApplicationAnswers("sweep-d", [{ key: "email", value: "two@example.com", question: "Email" }]);
+    await background.handleMessage({ type: "createConnection", provider: "OpenAI", name: "OpenAI", apiKey: "sk-test" });
+    global.fetch = mockLLMFlagAllCandidates();
+
+    const state = await background.getState();
+    const result = await background.runAutoPromote(state);
+
+    expect(result.promoted).toBe(0);
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.email).toBeUndefined();
+    const appC = await background.handleMessage({ type: "getApplication", applicationId: "sweep-c" });
+    const appD = await background.handleMessage({ type: "getApplication", applicationId: "sweep-d" });
+    expect(appC.answers.email.value).toBe("one@example.com");
+    expect(appD.answers.email.value).toBe("two@example.com");
+  });
+
+  test("resets the counter and stamps lastRunAt after a run", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-e");
+    await background.saveApplicationAnswers("sweep-e", [{ key: "email", value: "a@example.com" }]);
+    await background.handleMessage({ type: "createConnection", provider: "OpenAI", name: "OpenAI", apiKey: "sk-test" });
+    global.fetch = mockLLMFlagAllCandidates();
+
+    const before = Date.now();
+    await background.runAutoPromote(await background.getState());
+    const state = await background.getState();
+
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(0);
+    expect(state.profileAutoPromote.lastRunAt).toBeGreaterThanOrEqual(before);
+  });
+
+  test("with no candidates, resets bookkeeping without calling the LLM", async () => {
+    await background.persistState(background.defaultState());
+    global.fetch = jest.fn();
+
+    const result = await background.runAutoPromote(await background.getState());
+
+    expect(result.promoted).toBe(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+    const state = await background.getState();
+    expect(state.profileAutoPromote.lastRunAt).not.toBeNull();
+  });
+
+  test("with no LLM connection configured, throws and does not reset bookkeeping", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-f");
+    await background.saveApplicationAnswers("sweep-f", [{ key: "email", value: "a@example.com" }]);
+
+    const stateBefore = await background.getState();
+    await expect(background.runAutoPromote(stateBefore)).rejects.toThrow();
+
+    const state = await background.getState();
+    expect(state.profileAutoPromote.lastRunAt).toBeNull();
+  });
+});
+
+describe("isEligibleForAutoPromote / eligibility gate (paid + cloud-sync accounts only)", () => {
+  afterEach(async () => {
+    await clearAccount();
+  });
+
+  test("a free-tier account is ineligible", () => {
+    expect(background.isEligibleForAutoPromote({ signedIn: true, tier: "free", dataStorage: "cloud" })).toBe(false);
+  });
+
+  test("a paid account that hasn't opted into cloud sync is ineligible", () => {
+    expect(
+      background.isEligibleForAutoPromote({
+        signedIn: true,
+        tier: "paid",
+        planExpiresAt: Date.now() + 100000,
+        dataStorage: "local"
+      })
+    ).toBe(false);
+  });
+
+  test("a paid account with cloud sync enabled is eligible", () => {
+    expect(
+      background.isEligibleForAutoPromote({
+        signedIn: true,
+        tier: "paid",
+        planExpiresAt: Date.now() + 100000,
+        dataStorage: "cloud"
+      })
+    ).toBe(true);
+  });
+
+  test("runAutoPromoteCheck no-ops for an ineligible account even with a large backlog", async () => {
+    const state = background.defaultState();
+    state.autoPromoteToProfile = true;
+    state.profileAutoPromote = { lastRunAt: null, answersSinceLastRun: 15 };
+    await background.persistState(state);
+    await setAccount({ tier: "free" });
+    global.fetch = jest.fn();
+
+    await background.runAutoPromoteCheck();
+
+    const after = await background.getState();
+    expect(after.profileAutoPromote.answersSinceLastRun).toBe(15);
+    expect(after.profileAutoPromote.lastRunAt).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("runAutoPromoteNow throws for an ineligible account without mutating state", async () => {
+    await background.persistState(background.defaultState());
+    await setAccount({ dataStorage: "local" });
+
+    await expect(background.handleMessage({ type: "runAutoPromoteNow" })).rejects.toThrow(
+      /Pro plan and cloud sync/
+    );
+
+    const state = await background.getState();
+    expect(state.profileAutoPromote.lastRunAt).toBeNull();
   });
 });
 
@@ -138,6 +443,26 @@ describe("applyMigrations", () => {
     const changed = await background.applyMigrations(state);
     expect(changed).toBe(true);
     expect(state.connections).toEqual([]);
+  });
+
+  test("migrates a legacy `profiles`/`activeProfileId` shape into `applications`/`activeApplicationId`", async () => {
+    const state = {
+      profiles: { "p1": { id: "p1", name: "Old Profile", answers: {} } },
+      activeProfileId: "p1"
+    };
+    const changed = await background.applyMigrations(state);
+    expect(changed).toBe(true);
+    expect(state.profiles).toBeUndefined();
+    expect(state.activeProfileId).toBeUndefined();
+    expect(state.applications).toEqual({ "p1": { id: "p1", name: "Old Profile", answers: {} } });
+    expect(state.activeApplicationId).toBe("p1");
+  });
+
+  test("creates an empty shared Profile when migrating legacy state that never had one", async () => {
+    const state = { profiles: {}, activeProfileId: null };
+    const changed = await background.applyMigrations(state);
+    expect(changed).toBe(true);
+    expect(state.profile).toEqual({ answers: {}, updatedAt: null });
   });
 
   test("is a no-op for already-current state", async () => {
@@ -405,7 +730,7 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
   });
 
   test("throws with retryable:true when the batch reply isn't valid JSON (regression: retry-on-bad-format)", async () => {
-    await seedProfile("retry-profile");
+    await seedApplication("retry-app");
     await background.handleMessage({
       type: "createConnection",
       provider: "OpenAI",
@@ -421,7 +746,7 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
     try {
       await background.handleMessage({
         type: "suggestAnswers",
-        profileId: "retry-profile",
+        applicationId: "retry-app",
         fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
       });
     } catch (e) {
@@ -432,7 +757,7 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
   });
 
   test("a well-formed retry succeeds after a malformed first attempt", async () => {
-    await seedProfile("retry-profile-2");
+    await seedApplication("retry-app-2");
     await background.handleMessage({
       type: "createConnection",
       provider: "OpenAI",
@@ -451,22 +776,74 @@ describe("suggestAnswers marks a malformed LLM response as retryable", () => {
     await expect(
       background.handleMessage({
         type: "suggestAnswers",
-        profileId: "retry-profile-2",
+        applicationId: "retry-app-2",
         fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
       })
     ).rejects.toThrow();
 
     const result = await background.handleMessage({
       type: "suggestAnswers",
-      profileId: "retry-profile-2",
+      applicationId: "retry-app-2",
       fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
     });
     expect(result[0].suggested).toBe("Jane Doe");
   });
+
+  test("sees the shared Profile's answers merged in, not just the Application's own", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("retry-app-3");
+    await background.saveProfileAnswers([{ key: "name", value: "Jane Doe" }]);
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"field_0":"ignored"}' } }] })
+    }));
+
+    await background.handleMessage({
+      type: "suggestAnswers",
+      applicationId: "retry-app-3",
+      fields: [{ key: "name", question: "What is your name?", fieldType: "text" }]
+    });
+
+    const [, opts] = global.fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    const systemMessage = body.messages.find((m) => m.role === "system").content;
+    expect(systemMessage).toContain("Jane Doe");
+  });
 });
 
-describe("scoreProfileRelevance", () => {
-  const profile = {
+describe("matchSavedAnswers sees merged Profile + Application answers", () => {
+  test("matches a field against a Profile-only saved answer via an Application with no such key", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("match-app");
+    await background.saveProfileAnswers([{ key: "email", value: "shared@example.com", question: "Email" }]);
+    await background.handleMessage({
+      type: "createConnection",
+      provider: "OpenAI",
+      name: "OpenAI",
+      apiKey: "sk-test"
+    });
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"0":0}' } }] })
+    }));
+
+    const result = await background.handleMessage({
+      type: "matchSavedAnswers",
+      applicationId: "match-app",
+      fields: [{ key: "email", question: "Email address" }]
+    });
+    expect(result[0].value).toBe("shared@example.com");
+  });
+});
+
+describe("scoreApplicationRelevance", () => {
+  const application = {
     id: "p1",
     answers: {
       email_address: { value: "a@b.com" },
@@ -475,34 +852,34 @@ describe("scoreProfileRelevance", () => {
     }
   };
 
-  test("returns zero for a profile with no saved answers", () => {
-    expect(background.scoreProfileRelevance({ id: "empty", answers: {} }, ["Email Address"]))
+  test("returns zero for an application with no saved answers", () => {
+    expect(background.scoreApplicationRelevance({ id: "empty", answers: {} }, ["Email Address"]))
       .toEqual({ score: 0, matches: 0 });
   });
 
-  test("returns zero for a null/undefined profile", () => {
-    expect(background.scoreProfileRelevance(null, ["Email Address"])).toEqual({ score: 0, matches: 0 });
+  test("returns zero for a null/undefined application", () => {
+    expect(background.scoreApplicationRelevance(null, ["Email Address"])).toEqual({ score: 0, matches: 0 });
   });
 
   test("returns zero when there are no field labels to score", () => {
-    expect(background.scoreProfileRelevance(profile, [])).toEqual({ score: 0, matches: 0 });
+    expect(background.scoreApplicationRelevance(application, [])).toEqual({ score: 0, matches: 0 });
   });
 
   test("matches field labels against saved answer keys via Dice-token overlap", () => {
-    const result = background.scoreProfileRelevance(profile, ["Email Address", "First Name", "Phone Number"]);
+    const result = background.scoreApplicationRelevance(application, ["Email Address", "First Name", "Phone Number"]);
     expect(result.matches).toBe(3);
     expect(result.score).toBe(1);
   });
 
   test("unrelated field labels don't match", () => {
-    const result = background.scoreProfileRelevance(profile, ["Favorite Color", "Comments"]);
+    const result = background.scoreApplicationRelevance(application, ["Favorite Color", "Comments"]);
     expect(result.matches).toBe(0);
     expect(result.score).toBe(0);
   });
 });
 
 describe("checkFormRelevance", () => {
-  const profileWithAnswers = {
+  const applicationWithAnswers = {
     id: "match-me",
     answers: {
       email_address: { value: "a@b.com" },
@@ -510,21 +887,21 @@ describe("checkFormRelevance", () => {
       last_name: { value: "Doe" }
     }
   };
-  const emptyProfile = { id: "no-answers", answers: {} };
+  const emptyApplication = { id: "no-answers", answers: {} };
   const fieldLabels = ["Email Address", "First Name", "Last Name"];
 
-  test("not relevant when there are no profiles", () => {
-    expect(background.checkFormRelevance(fieldLabels, [])).toEqual({ relevant: false, matchedProfileId: null });
+  test("not relevant when there are no applications", () => {
+    expect(background.checkFormRelevance(fieldLabels, [])).toEqual({ relevant: false, matchedApplicationId: null });
   });
 
-  test("not relevant when no profile clears the match threshold", () => {
-    expect(background.checkFormRelevance(["Favorite Color", "Comments"], [profileWithAnswers, emptyProfile]))
-      .toEqual({ relevant: false, matchedProfileId: null });
+  test("not relevant when no application clears the match threshold", () => {
+    expect(background.checkFormRelevance(["Favorite Color", "Comments"], [applicationWithAnswers, emptyApplication]))
+      .toEqual({ relevant: false, matchedApplicationId: null });
   });
 
-  test("relevant and identifies the best-matching profile among several", () => {
-    expect(background.checkFormRelevance(fieldLabels, [emptyProfile, profileWithAnswers]))
-      .toEqual({ relevant: true, matchedProfileId: "match-me" });
+  test("relevant and identifies the best-matching application among several", () => {
+    expect(background.checkFormRelevance(fieldLabels, [emptyApplication, applicationWithAnswers]))
+      .toEqual({ relevant: true, matchedApplicationId: "match-me" });
   });
 });
 

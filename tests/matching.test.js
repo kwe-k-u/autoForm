@@ -60,7 +60,10 @@ describe("tokenSet", () => {
 });
 
 describe("matchAnswer", () => {
-  const profile = {
+  // matchAnswer is agnostic to where its answers come from — an Application,
+  // the shared Profile, or (in background.js) a merge of both. It only ever
+  // reads `.answers`, so a bare `{ answers }` object stands in for any of them.
+  const answersSource = {
     answers: {
       email_address: { value: "a@b.com" },
       full_name: { value: "Jane Doe" }
@@ -68,38 +71,38 @@ describe("matchAnswer", () => {
   };
 
   test("returns an exact label-key match", () => {
-    expect(matchAnswer(profile, "email_address", "email")).toEqual({ value: "a@b.com" });
+    expect(matchAnswer(answersSource, "email_address", "email")).toEqual({ value: "a@b.com" });
   });
 
   test("returns an exact name-key match when the label misses", () => {
-    expect(matchAnswer(profile, "unmatched_label", "full_name")).toEqual({ value: "Jane Doe" });
+    expect(matchAnswer(answersSource, "unmatched_label", "full_name")).toEqual({ value: "Jane Doe" });
   });
 
   test("falls back to Dice-coefficient fuzzy matching above the 0.5 threshold", () => {
-    expect(matchAnswer(profile, "your_full_legal_name", null)).toEqual({ value: "Jane Doe" });
+    expect(matchAnswer(answersSource, "your_full_legal_name", null)).toEqual({ value: "Jane Doe" });
   });
 
   test("returns null below the similarity threshold", () => {
-    expect(matchAnswer(profile, "favorite_color", null)).toBeNull();
+    expect(matchAnswer(answersSource, "favorite_color", null)).toBeNull();
   });
 
   test("name-part guard: won't map first_name to full_name with no part-name answer saved", () => {
-    expect(matchAnswer(profile, "first_name", null)).toBeNull();
+    expect(matchAnswer(answersSource, "first_name", null)).toBeNull();
   });
 
-  test("name-part guard: stops blocking once a part-name answer exists in the profile", () => {
+  test("name-part guard: stops blocking once a part-name answer exists in the saved answers", () => {
     const withFirst = {
       answers: {
-        ...profile.answers,
+        ...answersSource.answers,
         first_name: { value: "Jane" }
       }
     };
     // Without a part-name answer present this would return null (see previous test);
-    // with one present anywhere in the profile, the fuzzy match to full_name is allowed through.
+    // with one present anywhere in the saved answers, the fuzzy match to full_name is allowed through.
     expect(matchAnswer(withFirst, "given_name", null)).toEqual({ value: "Jane Doe" });
   });
 
-  test("returns null when there's no profile or no saved answers", () => {
+  test("returns null when there's no answers source or no saved answers", () => {
     expect(matchAnswer(null, "x", "y")).toBeNull();
     expect(matchAnswer({ answers: {} }, "x", "y")).toBeNull();
   });

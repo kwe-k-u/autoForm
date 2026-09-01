@@ -2,11 +2,17 @@
  * background.js — MV3 Service Worker
  *
  * Central message hub for autoForm. Manages:
- *   - Persistent state in chrome.storage.local (profiles, connections, settings)
- *   - CRUD for profiles and their saved answer maps
+ *   - Persistent state in chrome.storage.local (profile, applications, connections, settings)
+ *   - CRUD for the single shared Profile (identity info reused across every Application)
+ *   - CRUD for Applications and their saved answer maps
  *   - CRUD for LLM connections (provider presets, API keys, models)
  *   - LLM API calls (suggest answers, semantic matching, connection test)
  *   - Account/plan tracking (local mode or Firebase-backed)
+ *
+ * Hierarchy: user → Profile (one shared identity, e.g. name/phone/education)
+ * → Applications (per-application-type answer buckets, e.g. "Software
+ * Engineer"). Autofill/matching/AI-suggest see each Application's answers
+ * merged on top of the shared Profile answers — see getEffectiveApplication().
  *
  * All inbound messages arrive via chrome.runtime.onMessage and are dispatched
  * through `handleMessage`. Every handler returns a plain object; the listener
@@ -14,7 +20,7 @@
  */
 
 /* ── Storage keys ── */
-const STORAGE_KEY = "formauto";       // Main state bucket (profiles, connections, etc.)
+const STORAGE_KEY = "formauto";       // Main state bucket (profile, applications, connections, etc.)
 const ACCOUNT_KEY = "formautoAccount"; // Signed-in account object
 
 /* ── Shared modules (loaded via importScripts in service worker context) ── */
@@ -46,12 +52,28 @@ async function getAccount() {
 /** Resolve the applicable plan object for an account (Free/Paid/Local) */
 function planFor(account) {
   if (typeof FFAccount !== "undefined" && FFAccount.planFor) return FFAccount.planFor(account);
-  return { key: "free", label: "Free", maxProfiles: Infinity, maxAnswers: Infinity };
+  return { key: "free", label: "Free", maxApplications: Infinity, maxAnswers: Infinity };
 }
 
 /** True only when firebase-config.js was loaded successfully */
 function accountAvailable() {
   return globalThis.FIREBASE_CONFIG_AVAILABLE === true;
+}
+
+/**
+ * True only for a paid account that has also opted into cloud sync
+ * ("Save to the cloud" in Account — see account.dataStorage). The automatic
+ * weekly AI sweep (see runAutoPromote below) calls the LLM on the user's
+ * behalf on a recurring schedule with no explicit per-run action, unlike
+ * every other AI call in this extension — so unlike those, it's gated to
+ * this narrower audience rather than available to every signed-in user.
+ * The one-off manual "Move to Profile" button is NOT gated by this — it
+ * never calls the LLM, it's a plain local data move.
+ */
+function isEligibleForAutoPromote(account) {
+  if (!account) return false;
+  if (typeof FFAccount === "undefined" || !FFAccount.isPaidActive) return false;
+  return FFAccount.isPaidActive(account) && account.dataStorage === "cloud";
 }
 
 /* ── Provider / connection helpers ── */
@@ -113,15 +135,18 @@ async function decryptApiKey(conn) {
 
 function defaultState() {
   return {
-    profiles: {},              // Map of profileId → profile object
-    activeProfileId: null,     // Currently selected profile
+    profile: { answers: {}, updatedAt: null }, // Shared identity answers (name, phone, education, ...) reused across every Application
+    applications: {},          // Map of applicationId → application object
+    activeApplicationId: null, // Currently selected application
     autofillEnabled: true,     // Whether auto-triggered autofill is on
     autoSaveTyping: false,     // Whether to learn answers while user types (off by default)
     autoSaveDetection: false,  // Use LLM to auto-detect forms and enable saving per page
     formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
     connections: [],           // Array of LLM connection objects
     activeConnectionId: null,  // Currently selected LLM connection
-    suggestMaxRetries: 3       // "Suggest with AI" retries on a malformed LLM response
+    suggestMaxRetries: 3,      // "Suggest with AI" retries on a malformed LLM response
+    autoPromoteToProfile: true, // Whether the weekly AI sweep (see runAutoPromote) is on
+    profileAutoPromote: { lastRunAt: null, answersSinceLastRun: 0 } // Bookkeeping for that sweep
   };
 }
 
@@ -135,14 +160,38 @@ function clampMaxRetries(value) {
 
 /**
  * Migrate legacy state shapes to the current format.
- * Handles: `settings` → `connections[]` migration, and plaintext
- * `apiKey` → encrypted `apiKeyEnc` for any connection that still has one
- * (from before at-rest encryption was added, including connections that
- * just came through the `settings` migration above).
+ * Handles: `settings` → `connections[]` migration, plaintext `apiKey` →
+ * encrypted `apiKeyEnc` for any connection that still has one (from before
+ * at-rest encryption was added, including connections that just came
+ * through the `settings` migration above), and the `profiles` → `applications`
+ * rename (introducing the shared top-level `profile`).
  * Returns true if any migration was applied.
+ *
+ * Applied both to state loaded from chrome.storage.local (via getState())
+ * and to state pulled down from the cloud (via checkCloudData()) — a device
+ * that hasn't updated yet may still push the old `profiles`/`activeProfileId`
+ * shape, and that must not silently reintroduce those keys.
  */
 async function applyMigrations(state) {
   let changed = false;
+
+  // Legacy: `profiles` map → `applications` map (this rename introduced the
+  // separate, shared top-level `profile` for identity info reused across
+  // every application — see defaultState()).
+  if (state.profiles && !state.applications) {
+    state.applications = state.profiles;
+    delete state.profiles;
+    changed = true;
+  }
+  if (state.activeProfileId !== undefined && state.activeApplicationId === undefined) {
+    state.activeApplicationId = state.activeProfileId;
+    delete state.activeProfileId;
+    changed = true;
+  }
+  if (!state.profile || typeof state.profile !== "object") {
+    state.profile = { answers: {}, updatedAt: null };
+    changed = true;
+  }
 
   // Legacy: single "settings" object → first entry in connections array
   if (state.settings) {
@@ -219,20 +268,20 @@ async function setState(patch) {
   return next;
 }
 
-/* ── Profile helpers ── */
+/* ── Application helpers ── */
 
-function makeProfile(name) {
-  const id = makeId("p_");
+function makeApplication(name) {
+  const id = makeId("a_");
   const now = Date.now();
   return { id, name, createdAt: now, updatedAt: now, answers: {} };
 }
 
-function answerCount(profile) {
-  return Object.keys(profile.answers || {}).length;
+function answerCount(container) {
+  return Object.keys((container && container.answers) || {}).length;
 }
 
-function profileSummary(profile) {
-  return { id: profile.id, name: profile.name, answerCount: answerCount(profile) };
+function applicationSummary(application) {
+  return { id: application.id, name: application.name, answerCount: answerCount(application) };
 }
 
 function connectionSummary(conn) {
@@ -240,19 +289,36 @@ function connectionSummary(conn) {
 }
 
 /**
- * Ensure there's a valid active profile selected.
- * Falls back to the first available profile if the current one is missing.
+ * Ensure there's a valid active application selected.
+ * Falls back to the first available application if the current one is missing.
  */
-async function ensureActiveProfile(state) {
-  let active = state.activeProfileId && state.profiles[state.activeProfileId];
+async function ensureActiveApplication(state) {
+  let active = state.activeApplicationId && state.applications[state.activeApplicationId];
   if (!active) {
-    const ids = Object.keys(state.profiles);
+    const ids = Object.keys(state.applications);
     if (ids.length > 0) {
-      state.activeProfileId = ids[0];
-      active = state.profiles[ids[0]];
+      state.activeApplicationId = ids[0];
+      active = state.applications[ids[0]];
     }
   }
   return active;
+}
+
+/**
+ * Merge an application's own saved answers on top of the shared Profile's
+ * answers (application-owned keys win on collision). Used for autofill,
+ * matching, and AI-suggest, so identity fields entered once in the shared
+ * Profile (name, phone, education, ...) are available to every Application
+ * without being duplicated into each one. Returns null if the application
+ * doesn't exist.
+ */
+function getEffectiveApplication(state, applicationId) {
+  const application = state.applications[applicationId];
+  if (!application) return null;
+  return {
+    ...application,
+    answers: { ...((state.profile && state.profile.answers) || {}), ...(application.answers || {}) }
+  };
 }
 
 /** Same as above but for LLM connections */
@@ -296,20 +362,16 @@ function appendSite(sites, site) {
 }
 
 /**
- * Save answer pairs to a profile.
+ * Save answer pairs into an answers container (an Application or the shared
+ * Profile — anything shaped like `{ answers: {} }`).
  * Handles: creation, updates, deletions (empty value), site tracking,
  * and per-plan answer limits (if the plan has a finite maxAnswers).
+ * Mutates `container` in place; returns `{ saved: boolean }`.
  */
-async function saveAnswers(profileId, pairs) {
-  const state = await getState();
-  const profile = state.profiles[profileId];
-  if (!profile) throw new Error("Profile not found");
-  const account = await getAccount();
-  const plan = planFor(account);
-
+async function applyAnswerChanges(container, pairs, plan) {
   // Enforce answer limit if the plan has a finite cap
   if (Number.isFinite(plan.maxAnswers)) {
-    const existing = new Set(Object.keys(profile.answers));
+    const existing = new Set(Object.keys(container.answers));
     const delKeys = new Set();
     for (const p of pairs) {
       if (p.value === undefined || p.value === null || p.value === "") {
@@ -323,8 +385,8 @@ async function saveAnswers(profileId, pairs) {
         addKeys.add(k);
       }
     }
-    const removedExisting = Object.keys(profile.answers).filter((k) => delKeys.has(k)).length;
-    if (answerCount(profile) - removedExisting + addKeys.size > plan.maxAnswers) {
+    const removedExisting = Object.keys(container.answers).filter((k) => delKeys.has(k)).length;
+    if (answerCount(container) - removedExisting + addKeys.size > plan.maxAnswers) {
       throw new Error(
         `Free plan limit reached (${plan.maxAnswers} answers). Delete some answers or upgrade to Pro to keep saving.`
       );
@@ -341,19 +403,18 @@ async function saveAnswers(profileId, pairs) {
 
     // Empty value → delete the answer
     if (value === undefined || value === null || value === "") {
-      delete profile.answers[key];
+      delete container.answers[key];
       changed = true;
       continue;
     }
 
-    const existing = profile.answers[key];
-    console.log("existing",existing);
+    const existing = container.answers[key];
     if (!existing || existing.value !== value) {
       // New or changed value → upsert
       const question = pair.question
         ? String(pair.question).trim()
         : (existing?.question || null);
-      profile.answers[key] = {
+      container.answers[key] = {
         value,
         source: pair.source || existing?.source || "learned",
         updatedAt: Date.now(),
@@ -362,7 +423,7 @@ async function saveAnswers(profileId, pairs) {
         lastSeenOn: site || existing?.lastSeenOn || null,
         sites: appendSite(existing?.sites, site)
       };
-      if (question) profile.answers[key].question = question;
+      if (question) container.answers[key].question = question;
       changed = true;
     } else if (site && !(existing.sites || []).includes(site)) {
       // Same value but new site → just update site tracking
@@ -372,41 +433,103 @@ async function saveAnswers(profileId, pairs) {
       changed = true;
     }
   }
+  return changed;
+}
+
+/** Save answer pairs to a specific Application. */
+async function saveApplicationAnswers(applicationId, pairs) {
+  const state = await getState();
+  const application = state.applications[applicationId];
+  if (!application) throw new Error("Application not found");
+  const account = await getAccount();
+  const plan = planFor(account);
+  const keysBefore = new Set(Object.keys(application.answers));
+  const changed = await applyAnswerChanges(application, pairs, plan);
   if (changed) {
-    profile.updatedAt = Date.now();
+    application.updatedAt = Date.now();
+    // Count genuinely NEW keys (not updates, not deletions) toward the
+    // weekly AI sweep's trigger threshold — see runAutoPromote().
+    const newKeyCount = Object.keys(application.answers).filter((k) => !keysBefore.has(k)).length;
+    if (newKeyCount > 0) {
+      state.profileAutoPromote = state.profileAutoPromote || { lastRunAt: null, answersSinceLastRun: 0 };
+      state.profileAutoPromote.answersSinceLastRun = (state.profileAutoPromote.answersSinceLastRun || 0) + newKeyCount;
+    }
     await setState(state);
   }
   return { saved: changed };
 }
 
-/** Delete a single answer by key from a profile */
-async function deleteAnswer(profileId, key) {
+/** Save answer pairs to the shared Profile (reused across every Application). */
+async function saveProfileAnswers(pairs) {
   const state = await getState();
-  const profile = state.profiles[profileId];
-  if (!profile) throw new Error("Profile not found");
-  delete profile.answers[normalizeKey(key)];
-  profile.updatedAt = Date.now();
+  const account = await getAccount();
+  const plan = planFor(account);
+  const changed = await applyAnswerChanges(state.profile, pairs, plan);
+  if (changed) {
+    state.profile.updatedAt = Date.now();
+    await setState(state);
+  }
+  return { saved: changed };
+}
+
+/** Delete a single answer by key from an Application */
+async function deleteApplicationAnswer(applicationId, key) {
+  const state = await getState();
+  const application = state.applications[applicationId];
+  if (!application) throw new Error("Application not found");
+  delete application.answers[normalizeKey(key)];
+  application.updatedAt = Date.now();
+  await setState(state);
+  return { ok: true };
+}
+
+/** Delete a single answer by key from the shared Profile */
+async function deleteProfileAnswer(key) {
+  const state = await getState();
+  delete state.profile.answers[normalizeKey(key)];
+  state.profile.updatedAt = Date.now();
   await setState(state);
   return { ok: true };
 }
 
 /**
- * Delete all answers associated with a specific site.
+ * Move a single saved answer from one Application into the shared Profile
+ * (explicit user action via the "Move to Profile" button — always
+ * overwrites whatever's already at that key in Profile, unlike the
+ * automatic sweep below which never overwrites a conflicting value).
+ */
+async function moveAnswerToProfile(applicationId, key) {
+  const state = await getState();
+  const application = state.applications[applicationId];
+  if (!application) throw new Error("Application not found");
+  const normalized = normalizeKey(key);
+  const answer = application.answers[normalized];
+  if (!answer) throw new Error("Answer not found");
+  state.profile.answers[normalized] = answer;
+  state.profile.updatedAt = Date.now();
+  delete application.answers[normalized];
+  application.updatedAt = Date.now();
+  await setState(state);
+  return { ok: true };
+}
+
+/**
+ * Delete all answers associated with a specific site, on an Application.
  * If site is "unknown", deletes answers with no firstSeenOn.
  * Also removes the site from answers' site lists without deleting them.
  */
-async function deleteSiteCollection(profileId, site) {
+async function deleteApplicationSiteCollection(applicationId, site) {
   const state = await getState();
-  const profile = state.profiles[profileId];
-  if (!profile) throw new Error("Profile not found");
+  const application = state.applications[applicationId];
+  if (!application) throw new Error("Application not found");
   const target = String(site || "").toLowerCase();
   let deleted = 0;
   let changed = false;
-  for (const key of Object.keys(profile.answers)) {
-    const a = profile.answers[key];
+  for (const key of Object.keys(application.answers)) {
+    const a = application.answers[key];
     if (target === "unknown") {
       if (!a.firstSeenOn) {
-        delete profile.answers[key];
+        delete application.answers[key];
         deleted++;
         changed = true;
       }
@@ -414,7 +537,7 @@ async function deleteSiteCollection(profileId, site) {
     }
     const origin = (a.firstSeenOn || "").toLowerCase();
     if (origin === target) {
-      delete profile.answers[key];
+      delete application.answers[key];
       deleted++;
       changed = true;
     } else if ((a.sites || []).some((s) => s.toLowerCase() === target)) {
@@ -423,28 +546,47 @@ async function deleteSiteCollection(profileId, site) {
     }
   }
   if (changed) {
-    profile.updatedAt = Date.now();
+    application.updatedAt = Date.now();
     await setState(state);
   }
   return { ok: true, deleted };
 }
 
-async function listProfiles() {
+async function listApplications() {
   const state = await getState();
-  await ensureActiveProfile(state);
+  await ensureActiveApplication(state);
   return {
-    profiles: Object.values(state.profiles).map(profileSummary),
-    activeProfileId: state.activeProfileId,
+    applications: Object.values(state.applications).map(applicationSummary),
+    activeApplicationId: state.activeApplicationId,
     autofillEnabled: state.autofillEnabled
   };
 }
 
-/** Return a deep clone of a profile (never expose the live reference) */
-async function getProfile(id) {
+/** Return a deep clone of an Application, raw/unmerged (never expose the live reference) */
+async function getApplication(id) {
   const state = await getState();
-  const profile = state.profiles[id];
-  if (!profile) throw new Error("Profile not found");
-  return JSON.parse(JSON.stringify(profile));
+  const application = state.applications[id];
+  if (!application) throw new Error("Application not found");
+  return JSON.parse(JSON.stringify(application));
+}
+
+/**
+ * Return a deep clone of an Application with the shared Profile's answers
+ * merged in underneath (see getEffectiveApplication). Used for autofill and
+ * matching, where an Application should benefit from shared identity info
+ * without that info being copied into the Application's own storage.
+ */
+async function getApplicationForFill(id) {
+  const state = await getState();
+  const effective = getEffectiveApplication(state, id);
+  if (!effective) throw new Error("Application not found");
+  return JSON.parse(JSON.stringify(effective));
+}
+
+/** Return a deep clone of the shared Profile (never expose the live reference) */
+async function getUserProfile() {
+  const state = await getState();
+  return JSON.parse(JSON.stringify(state.profile));
 }
 
 /* ── LLM prompt builders ── */
@@ -453,15 +595,15 @@ async function getProfile(id) {
  * Build the system prompt that gives the LLM context about the user's
  * saved answers (up to 60 key-value pairs).
  */
-function buildSystemPrompt(profile) {
-  const lines = Object.entries(profile.answers || {})
+function buildSystemPrompt(application) {
+  const lines = Object.entries(application.answers || {})
     .map(([k, a]) => `- ${normalizeKey(k)}: ${JSON.stringify(String(a.value))}`)
     .slice(0, 60);
   return [
     "You are an application assistant that helps users fill out forms quickly",
     "You will be provided with a list of questions and corresponding answers that the user has previously filled on other applications",
     "If you don't have enough information for a field do not provide an answer, especially for questions where the answer requires fact. Eg: Age, Date of birth, GPA, Salary expectations",
-    "Profile answers:",
+    "Saved answers:",
     lines.length ? lines.join("\n") : "(none yet)"
   ].join("\n");
 }
@@ -478,7 +620,7 @@ function buildAnswerPrompt(question, fieldType, options) {
   }
   parts.push(
     "Instructions:",
-    "1. If the profile answers contain a matching answer, return exactly that value.",
+    "1. If the saved answers contain a matching answer, return exactly that value.",
     "2. If an allowed list is given, pick the best single option value and return it verbatim.",
     "3. Do not provide an answer if you genuinely cannot infer a value.",
     "4. Reply with ONLY the value. No quotes, no explanations, no markdown, no JSON."
@@ -570,13 +712,13 @@ async function callLLM(messages, overrideConn) {
  * Falls back to one-by-one calls if the batch response is unparseable.
  * Returns an array of { suggested, error } objects aligned with the input.
  */
-async function suggestAnswers(profileId, fields) {
+async function suggestAnswers(applicationId, fields) {
   const state = await getState();
-  const profile = state.profiles[profileId];
-  if (!profile) throw new Error("Profile not found");
+  const application = getEffectiveApplication(state, applicationId);
+  if (!application) throw new Error("Application not found");
   if (!fields || fields.length === 0) return [];
 
-  const system = buildSystemPrompt(profile);
+  const system = buildSystemPrompt(application);
   const user = [
     "Answer the following form fields. Respond as a JSON object where each key is the field identifier and the value is the answer string.",
     "Example: {\"field_1\": \"John Doe\", \"field_2\": \"male\"}",
@@ -644,12 +786,12 @@ async function suggestAnswers(profileId, fields) {
  * which maps each question to a saved-answer index (or null if none fit).
  * The LLM never invents values — it only selects from the saved list.
  */
-async function matchSavedAnswers(profileId, fields) {
+async function matchSavedAnswers(applicationId, fields) {
   const state = await getState();
-  const profile = state.profiles[profileId];
-  if (!profile) throw new Error("Profile not found");
+  const application = getEffectiveApplication(state, applicationId);
+  if (!application) throw new Error("Application not found");
   if (!fields || fields.length === 0) return [];
-  const answers = profile.answers || {};
+  const answers = application.answers || {};
   const keys = Object.keys(answers);
   if (!keys.length) return fields.map(() => ({ answerKey: null }));
 
@@ -759,19 +901,19 @@ async function inferFieldQuestion(html, target) {
 
 const _formDetectionCache = new Map();
 
-/** Minimum number of fields that must map to a profile's saved answers */
+/** Minimum number of fields that must map to an application's saved answers */
 const RELEVANCE_MIN_MATCHES = 2;
-/** Minimum fraction of collected fields that must map to a profile's saved answers */
+/** Minimum fraction of collected fields that must map to an application's saved answers */
 const RELEVANCE_MIN_RATIO = 0.25;
 
 /**
- * Score how well a single profile's saved answers explain a page's field
- * labels, using the same Dice-token matching FFMatching.matchAnswer uses
- * for individual fields (shared/matching.js). A profile with no saved
- * answers can never match.
+ * Score how well a single application's saved answers (merged with the
+ * shared Profile) explain a page's field labels, using the same Dice-token
+ * matching FFMatching.matchAnswer uses for individual fields
+ * (shared/matching.js). An application with no saved answers can never match.
  */
-function scoreProfileRelevance(profile, fieldLabels) {
-  const answers = (profile && profile.answers) || {};
+function scoreApplicationRelevance(application, fieldLabels) {
+  const answers = (application && application.answers) || {};
   const keys = Object.keys(answers);
   if (!keys.length || !fieldLabels.length) return { score: 0, matches: 0 };
   const keyTokenSets = keys.map((k) => FFMatching.tokenSet(k));
@@ -792,34 +934,37 @@ function scoreProfileRelevance(profile, fieldLabels) {
 
 /**
  * Determine whether a page's field labels are relevant to ANY of the
- * user's profiles (cheap local heuristic — no LLM call). Returns the
- * single best-matching profile, if any clears both thresholds.
+ * user's applications (cheap local heuristic — no LLM call). Returns the
+ * single best-matching application, if any clears both thresholds.
  */
-function checkFormRelevance(fieldLabels, profiles) {
-  let best = { profileId: null, score: 0, matches: 0 };
-  for (const profile of profiles) {
-    const r = scoreProfileRelevance(profile, fieldLabels);
+function checkFormRelevance(fieldLabels, applications) {
+  let best = { applicationId: null, score: 0, matches: 0 };
+  for (const application of applications) {
+    const r = scoreApplicationRelevance(application, fieldLabels);
     if (r.matches > best.matches || (r.matches === best.matches && r.score > best.score)) {
-      best = { profileId: profile.id, score: r.score, matches: r.matches };
+      best = { applicationId: application.id, score: r.score, matches: r.matches };
     }
   }
   const relevant = best.matches >= RELEVANCE_MIN_MATCHES && best.score >= RELEVANCE_MIN_RATIO;
-  return { relevant, matchedProfileId: relevant ? best.profileId : null };
+  return { relevant, matchedApplicationId: relevant ? best.applicationId : null };
 }
 
 /**
  * Use the LLM to determine if a page is a fillable form (application,
  * registration, survey, checkout, etc.), and separately (via a local
- * heuristic, not the LLM) whether it's relevant to any saved profile.
+ * heuristic, not the LLM) whether it's relevant to any saved application.
  * The "isForm" result is cached per hostname so the LLM is only called
  * once per site per browser session; relevance is always recomputed since
- * saved profile answers can change between calls.
+ * saved answers can change between calls. Relevance is checked against each
+ * application's merged (Application + shared Profile) answers, so a page
+ * that only matches shared identity fields still counts as relevant.
  */
 async function detectFormPage(url, title, fieldLabels) {
   let hostname = "";
   try { hostname = new URL(url).hostname; } catch { hostname = url; }
   const state = await getState();
-  const relevance = checkFormRelevance(fieldLabels || [], Object.values(state.profiles));
+  const effectiveApplications = Object.keys(state.applications).map((id) => getEffectiveApplication(state, id));
+  const relevance = checkFormRelevance(fieldLabels || [], effectiveApplications);
 
   if (_formDetectionCache.has(hostname)) {
     return { isForm: _formDetectionCache.get(hostname), ...relevance };
@@ -861,6 +1006,164 @@ async function detectFormPage(url, title, fieldLabels) {
     _formDetectionCache.set(hostname, false);
     return { isForm: false, ...relevance };
   }
+}
+
+/* ── Profile auto-promote (weekly AI sweep) ──
+ * Moves Application-scoped answers that look like general identity info
+ * (name, phone, education, ...) up into the shared Profile so they're
+ * reused across every Application instead of re-saved per Application.
+ * Gated to paid + cloud-sync accounts (see isEligibleForAutoPromote) and to
+ * running at most once a week with at least 10 new Application answers
+ * accumulated since the last run — see runAutoPromoteCheck() and the
+ * chrome.alarms wiring near the bottom of this file.
+ */
+
+const AUTO_PROMOTE_ALARM_NAME = "profileAutoPromote";
+const AUTO_PROMOTE_MIN_NEW_ANSWERS = 10;
+const AUTO_PROMOTE_MAX_CANDIDATES = 100;
+
+/**
+ * Build the list of Application-owned answers that are candidates for
+ * promotion: any key not already present in the shared Profile. The same
+ * key can appear more than once (once per Application that has it) — the
+ * caller groups by key afterward to enforce the same-value-only rule.
+ */
+function collectAutoPromoteCandidates(state) {
+  const candidates = [];
+  for (const application of Object.values(state.applications)) {
+    for (const [key, answer] of Object.entries(application.answers || {})) {
+      if (state.profile.answers[key]) continue;
+      candidates.push({
+        applicationId: application.id,
+        applicationName: application.name,
+        key,
+        question: answer.question || key,
+        value: answer.value,
+        updatedAt: answer.updatedAt || 0
+      });
+    }
+  }
+  candidates.sort((a, b) => b.updatedAt - a.updatedAt);
+  return candidates.slice(0, AUTO_PROMOTE_MAX_CANDIDATES).map((c, i) => ({ id: i, ...c }));
+}
+
+/**
+ * Ask the LLM which candidates represent general personal-identity info
+ * (reusable across any application) vs. application-specific info. Returns
+ * the subset of `candidates` the LLM flagged. Reuses the same
+ * "reply with ONLY a JSON array" + code-fence-stripping parse pattern as
+ * suggestAnswers/matchSavedAnswers above.
+ */
+async function classifyAutoPromoteCandidates(candidates) {
+  const system = [
+    "You help organize a user's saved form answers into two buckets:",
+    "1. General personal identity info that's the same no matter which application/form it's for — e.g. full name, email, phone number, mailing address, date of birth, education history, work authorization status.",
+    "2. Information specific to one particular application/context — e.g. a cover-letter answer, \"why do you want this role\", an application-specific date or reference number.",
+    "Reply with ONLY a JSON array of the ids from bucket 1 (general identity info). Example: [0,2,5]. If none qualify, reply with []."
+  ].join("\n");
+  const user = candidates
+    .map((c) => `${c.id}: [${c.applicationName}] ${c.question} -> ${JSON.stringify(String(c.value))}`)
+    .join("\n");
+
+  const raw = await callLLM([{ role: "system", content: system }, { role: "user", content: user }]);
+  const cleaned = raw.replace(/```json\s*/i, "").replace(/```/g, "").trim();
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+  const ids = new Set(JSON.parse(cleaned.slice(start, end + 1)));
+  return candidates.filter((c) => ids.has(c.id));
+}
+
+/**
+ * Run the sweep: classify candidates, then promote only the keys where
+ * every flagged candidate under that key agrees on the exact same value
+ * (see the correctness rule in the file header / plan — never silently
+ * pick one Application's value over another's). Returns the number of
+ * keys actually promoted. Always updates profileAutoPromote's bookkeeping
+ * on success; the caller is responsible for not resetting it on failure.
+ */
+async function runAutoPromote(state) {
+  const candidates = collectAutoPromoteCandidates(state);
+  if (!candidates.length) {
+    state.profileAutoPromote = { lastRunAt: Date.now(), answersSinceLastRun: 0 };
+    await setState(state);
+    return { promoted: 0 };
+  }
+
+  const flagged = await classifyAutoPromoteCandidates(candidates);
+
+  const byKey = new Map();
+  for (const c of flagged) {
+    if (!byKey.has(c.key)) byKey.set(c.key, []);
+    byKey.get(c.key).push(c);
+  }
+
+  let promoted = 0;
+  for (const [key, entries] of byKey) {
+    if (state.profile.answers[key]) continue; // Raced with another write since candidates were built
+    const values = new Set(entries.map((e) => e.value));
+    if (values.size > 1) continue; // Conflicting values across Applications — leave in place
+    const [first] = entries;
+    const application = state.applications[first.applicationId];
+    const sourceAnswer = application && application.answers[key];
+    if (!sourceAnswer) continue;
+    state.profile.answers[key] = sourceAnswer;
+    for (const e of entries) {
+      const app = state.applications[e.applicationId];
+      if (app) delete app.answers[key];
+    }
+    promoted++;
+  }
+
+  state.profile.updatedAt = Date.now();
+  state.profileAutoPromote = { lastRunAt: Date.now(), answersSinceLastRun: 0 };
+  await setState(state);
+  return { promoted };
+}
+
+/**
+ * Weekly alarm handler: only actually runs the sweep when the account is
+ * eligible, the setting is on, and enough new answers have piled up.
+ * Never throws — this runs unattended off an alarm, not a user click.
+ */
+async function runAutoPromoteCheck() {
+  try {
+    const state = await getState();
+    if (!state.autoPromoteToProfile) return;
+    const answersSinceLastRun = (state.profileAutoPromote && state.profileAutoPromote.answersSinceLastRun) || 0;
+    if (answersSinceLastRun < AUTO_PROMOTE_MIN_NEW_ANSWERS) return;
+    const account = await getAccount();
+    if (!isEligibleForAutoPromote(account)) return;
+    await runAutoPromote(state);
+  } catch (e) {
+    console.warn("[autoForm] Profile auto-promote sweep failed:", (e && e.message) || e);
+  }
+}
+
+/**
+ * Manual "Check now" trigger — still requires eligibility, but bypasses the
+ * weekly/10-answer gate so the feature is testable and discoverable without
+ * waiting a week.
+ */
+async function runAutoPromoteNow() {
+  const account = await getAccount();
+  if (!isEligibleForAutoPromote(account)) {
+    throw new Error("Automatic AI sweep requires the Pro plan and cloud sync.");
+  }
+  const state = await getState();
+  return runAutoPromote(state);
+}
+
+/** Status for the Profile view's settings card. */
+async function getProfileAutoPromoteStatus() {
+  const state = await getState();
+  const account = await getAccount();
+  const bookkeeping = state.profileAutoPromote || { lastRunAt: null, answersSinceLastRun: 0 };
+  return {
+    enabled: !!state.autoPromoteToProfile,
+    eligible: isEligibleForAutoPromote(account),
+    answersSinceLastRun: bookkeeping.answersSinceLastRun || 0,
+    lastRunAt: bookkeeping.lastRunAt || null
+  };
 }
 
 /* ── Connection management ── */
@@ -1082,8 +1385,9 @@ async function getAutoFormAIUsage() {
  */
 function syncableState(state) {
   return {
-    profiles: state.profiles,
-    activeProfileId: state.activeProfileId,
+    profile: state.profile,
+    applications: state.applications,
+    activeApplicationId: state.activeApplicationId,
     autofillEnabled: state.autofillEnabled,
     autoSaveTyping: state.autoSaveTyping,
     autoSaveDetection: state.autoSaveDetection,
@@ -1124,7 +1428,13 @@ async function checkCloudData() {
     account.dataStorage = result.dataStorage;
     await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
     if (result.dataStorage === "cloud" && result.data) {
-      await setState(result.data);
+      // A device that hasn't updated yet may still push the old
+      // `profiles`/`activeProfileId` shape — normalize before merging so
+      // stale keys don't get reintroduced into local state (see
+      // applyMigrations()'s profiles→applications block).
+      const normalized = Object.assign(defaultState(), result.data);
+      await applyMigrations(normalized);
+      await setState(normalized);
     }
     return { known: true, dataStorage: result.dataStorage };
   } catch (e) {
@@ -1168,16 +1478,17 @@ async function handleMessage(msg) {
 
     case "getState": {
       const state = await getState();
-      await ensureActiveProfile(state);
+      await ensureActiveApplication(state);
       await ensureActiveConnection(state);
       return {
-        activeProfileId: state.activeProfileId,
+        activeApplicationId: state.activeApplicationId,
         autofillEnabled: state.autofillEnabled,
         autoSaveTyping: state.autoSaveTyping !== false,
         autoSaveDetection: state.autoSaveDetection === true,
         formDetectionMode: state.formDetectionMode === "auto" ? "auto" : "manual",
         suggestMaxRetries: clampMaxRetries(state.suggestMaxRetries),
-        profiles: Object.values(state.profiles).map(profileSummary),
+        applications: Object.values(state.applications).map(applicationSummary),
+        profileAnswerCount: answerCount(state.profile),
         connections: state.connections.map(connectionSummary),
         activeConnectionId: state.activeConnectionId
       };
@@ -1222,67 +1533,97 @@ async function handleMessage(msg) {
       return detectFormPage(msg.url || "", msg.title || "", msg.fieldLabels || []);
     }
 
-    /* ── Profile CRUD ── */
+    /* ── Application CRUD ── */
 
-    case "listProfiles":
-      return listProfiles();
+    case "listApplications":
+      return listApplications();
 
-    case "getProfile":
-      return getProfile(msg.profileId);
+    case "getApplication":
+      return getApplication(msg.applicationId);
 
-    case "createProfile": {
+    case "getApplicationForFill":
+      return getApplicationForFill(msg.applicationId);
+
+    case "createApplication": {
       const state = await getState();
       const account = await getAccount();
       const plan = planFor(account);
-      if (Number.isFinite(plan.maxProfiles) && Object.keys(state.profiles).length >= plan.maxProfiles) {
+      if (Number.isFinite(plan.maxApplications) && Object.keys(state.applications).length >= plan.maxApplications) {
         throw new Error(
-          `Free plan is limited to ${plan.maxProfiles} profile. Delete it or upgrade to Pro to create more.`
+          `Free plan is limited to ${plan.maxApplications} application. Delete it or upgrade to Pro to create more.`
         );
       }
-      const profile = makeProfile(String(msg.name || "New Profile"));
-      state.profiles[profile.id] = profile;
-      state.activeProfileId = profile.id;
+      const application = makeApplication(String(msg.name || "New Application"));
+      state.applications[application.id] = application;
+      state.activeApplicationId = application.id;
       await setState(state);
-      return { profile: profileSummary(profile) };
+      return { application: applicationSummary(application) };
     }
 
-    case "renameProfile": {
+    case "renameApplication": {
       const state = await getState();
-      const profile = state.profiles[msg.profileId];
-      if (!profile) throw new Error("Profile not found");
-      profile.name = String(msg.name || profile.name);
-      profile.updatedAt = Date.now();
+      const application = state.applications[msg.applicationId];
+      if (!application) throw new Error("Application not found");
+      application.name = String(msg.name || application.name);
+      application.updatedAt = Date.now();
       await setState(state);
       return { ok: true };
     }
 
-    case "deleteProfile": {
+    case "deleteApplication": {
       const state = await getState();
-      delete state.profiles[msg.profileId];
-      if (state.activeProfileId === msg.profileId) state.activeProfileId = null;
-      await ensureActiveProfile(state);
+      delete state.applications[msg.applicationId];
+      if (state.activeApplicationId === msg.applicationId) state.activeApplicationId = null;
+      await ensureActiveApplication(state);
       await setState(state);
       return { ok: true };
     }
 
-    case "setActiveProfile": {
+    case "setActiveApplication": {
       const state = await getState();
-      if (!state.profiles[msg.profileId]) throw new Error("Profile not found");
-      state.activeProfileId = msg.profileId;
+      if (!state.applications[msg.applicationId]) throw new Error("Application not found");
+      state.activeApplicationId = msg.applicationId;
       await setState(state);
       return { ok: true };
     }
+
+    /* ── Profile CRUD (shared identity answers) ── */
+
+    case "getUserProfile":
+      return getUserProfile();
+
+    case "saveProfileAnswers":
+      return saveProfileAnswers(msg.pairs || []);
+
+    case "deleteProfileAnswer":
+      return deleteProfileAnswer(msg.key);
+
+    case "moveAnswerToProfile":
+      return moveAnswerToProfile(msg.applicationId, msg.key);
+
+    case "setAutoPromoteToProfile": {
+      const state = await getState();
+      state.autoPromoteToProfile = !!msg.enabled;
+      await setState(state);
+      return { ok: true };
+    }
+
+    case "getProfileAutoPromoteStatus":
+      return getProfileAutoPromoteStatus();
+
+    case "runAutoPromoteNow":
+      return runAutoPromoteNow();
 
     /* ── Answer CRUD ── */
 
     case "saveAnswers":
-      return saveAnswers(msg.profileId, msg.pairs || []);
+      return saveApplicationAnswers(msg.applicationId, msg.pairs || []);
 
     case "deleteAnswer":
-      return deleteAnswer(msg.profileId, msg.key);
+      return deleteApplicationAnswer(msg.applicationId, msg.key);
 
     case "deleteSiteCollection":
-      return deleteSiteCollection(msg.profileId, msg.site);
+      return deleteApplicationSiteCollection(msg.applicationId, msg.site);
 
     /* ── Account ── */
 
@@ -1399,10 +1740,10 @@ async function handleMessage(msg) {
     /* ── LLM features ── */
 
     case "suggestAnswers":
-      return suggestAnswers(msg.profileId, msg.fields || []);
+      return suggestAnswers(msg.applicationId, msg.fields || []);
 
     case "matchSavedAnswers":
-      return matchSavedAnswers(msg.profileId, msg.fields || []);
+      return matchSavedAnswers(msg.applicationId, msg.fields || []);
 
     case "testLLM":
       return testLLMConnection(msg.connection);
@@ -1448,10 +1789,28 @@ chrome.runtime.onInstalled.addListener(() => {
     });
     chrome.contextMenus.create({
       id: CONTEXT_MENU_PREFILL_ID,
-      title: "Prefill from profile",
+      title: "Prefill from saved answers",
       contexts: ["editable"]
     });
   });
+  ensureAutoPromoteAlarm();
+});
+
+/**
+ * Ensure the weekly auto-promote alarm exists, without resetting its
+ * schedule if it's already there — chrome.alarms.create() with an existing
+ * name restarts the countdown, and this listener also fires on every
+ * extension update/dev-reload, not just first install.
+ */
+async function ensureAutoPromoteAlarm() {
+  const existing = await chrome.alarms.get(AUTO_PROMOTE_ALARM_NAME);
+  if (!existing) {
+    chrome.alarms.create(AUTO_PROMOTE_ALARM_NAME, { periodInMinutes: 7 * 24 * 60 });
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === AUTO_PROMOTE_ALARM_NAME) runAutoPromoteCheck();
 });
 
 /**
@@ -1482,9 +1841,18 @@ if (typeof module !== "undefined" && module.exports) {
     getState,
     setState,
     persistState,
-    saveAnswers,
-    deleteAnswer,
-    deleteSiteCollection,
+    saveApplicationAnswers,
+    deleteApplicationAnswer,
+    deleteApplicationSiteCollection,
+    saveProfileAnswers,
+    deleteProfileAnswer,
+    moveAnswerToProfile,
+    getEffectiveApplication,
+    isEligibleForAutoPromote,
+    runAutoPromote,
+    runAutoPromoteCheck,
+    runAutoPromoteNow,
+    getProfileAutoPromoteStatus,
     applyMigrations,
     mergeConnection,
     defaultConnection,
@@ -1496,7 +1864,7 @@ if (typeof module !== "undefined" && module.exports) {
     encryptApiKey,
     decryptApiKey,
     inferFieldQuestion,
-    scoreProfileRelevance,
+    scoreApplicationRelevance,
     checkFormRelevance
   };
 }

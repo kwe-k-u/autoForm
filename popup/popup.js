@@ -3,7 +3,7 @@
  *
  * Main popup UI controller. Rendered when the user clicks the autoForm
  * toolbar icon. Responsibilities:
- *   - Profile selector (switch, create)
+ *   - Application selector (switch, create)
  *   - Connection selector (switch)
  *   - Auto-fill toggle & auto-save-while-typing toggle
  *   - "Autofill now" button (heuristic + LLM semantic match)
@@ -217,29 +217,29 @@
       }
       const state = res.data;
 
-      // Populate profile selector
-      const select = $("profileSelect");
+      // Populate application selector
+      const select = $("applicationSelect");
       select.innerHTML = "";
-      for (const p of state.profiles) {
+      for (const p of state.applications) {
         const opt = document.createElement("option");
         opt.value = p.id;
         opt.textContent = p.name;
         select.appendChild(opt);
       }
-      if (state.profiles.length === 0) {
+      if (state.applications.length === 0) {
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "No profiles yet";
+        opt.textContent = "No applications yet";
         opt.disabled = true;
         select.appendChild(opt);
       } else {
-        select.value = state.activeProfileId || state.profiles[0].id;
+        select.value = state.activeApplicationId || state.applications[0].id;
       }
 
       renderConnections(state);
 
       $("autofillToggle").checked = !!state.autofillEnabled;
-      updateAnswerCount(state.profiles, state.activeProfileId);
+      updateAnswerCount(state.applications, state.activeApplicationId);
       loadAccount();
 
       // Load per-page auto-save state from content script
@@ -277,25 +277,25 @@
 
   /* ── Answer count display ── */
 
-  function updateAnswerCount(profiles, activeId) {
-    const p = profiles.find((x) => x.id === activeId);
+  function updateAnswerCount(applications, activeId) {
+    const p = applications.find((x) => x.id === activeId);
     $("answerCount").textContent = p
       ? `${p.answerCount} saved answers in "${p.name}"`
-      : "No profile selected";
+      : "No application selected";
   }
 
   async function refreshSummary() {
     const res = await sendMsg({ type: "getState" });
-    if (res.ok) updateAnswerCount(res.data.profiles, res.data.activeProfileId);
+    if (res.ok) updateAnswerCount(res.data.applications, res.data.activeApplicationId);
   }
 
   /* ── Event listeners ── */
 
-  // Switch active profile
-  $("profileSelect").addEventListener("change", async (e) => {
+  // Switch active application
+  $("applicationSelect").addEventListener("change", async (e) => {
     const id = e.target.value;
     if (!id) return;
-    const res = await sendMsg({ type: "setActiveProfile", profileId: id });
+    const res = await sendMsg({ type: "setActiveApplication", applicationId: id });
     if (!res.ok) setStatus(res.error, true);
     else {
       setStatus("");
@@ -326,24 +326,29 @@
     }
   });
 
-  // Create a new profile
-  $("newProfileBtn").addEventListener("click", async () => {
-    const name = prompt("New profile name:", "My Profile");
+  // Create a new application
+  $("newApplicationBtn").addEventListener("click", async () => {
+    const name = prompt("New application name:", "My Application");
     if (!name) return;
-    const res = await sendMsg({ type: "createProfile", name });
+    const res = await sendMsg({ type: "createApplication", name });
     if (!res.ok) {
       setStatus(res.error, true);
       return;
     }
     const opt = document.createElement("option");
-    opt.value = res.data.profile.id;
-    opt.textContent = res.data.profile.name;
-    const select = $("profileSelect");
+    opt.value = res.data.application.id;
+    opt.textContent = res.data.application.name;
+    const select = $("applicationSelect");
     select.appendChild(opt);
-    select.value = res.data.profile.id;
+    select.value = res.data.application.id;
     select.querySelectorAll("option[disabled]").forEach((o) => o.remove());
-    setStatus(`Created profile "${res.data.profile.name}".`);
+    setStatus(`Created application "${res.data.application.name}".`);
     await refreshSummary();
+  });
+
+  // Open the Settings page with the shared Profile view pre-selected
+  $("editProfileBtn").addEventListener("click", () => {
+    chrome.runtime.openOptionsPage();
   });
 
   // Auto-fill toggle

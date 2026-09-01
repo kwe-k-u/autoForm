@@ -11,6 +11,7 @@ function clone(value) {
 
 function createChromeMock() {
   const store = new Map();
+  const alarmsStore = new Map();
 
   const local = {
     async get(keys) {
@@ -51,6 +52,15 @@ function createChromeMock() {
     },
     tabs: {
       sendMessage() {}
+    },
+    alarms: {
+      async create(name, info) {
+        alarmsStore.set(name, { name, ...info });
+      },
+      async get(name) {
+        return alarmsStore.get(name);
+      },
+      onAlarm: { addListener() {} }
     }
   };
 }

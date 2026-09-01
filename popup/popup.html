@@ -30,12 +30,13 @@
   </section>
 
   <section class="card">
-    <label class="field-label" for="profileSelect">Active profile</label>
+    <label class="field-label" for="applicationSelect">Active application</label>
     <div class="row">
-      <select id="profileSelect"></select>
-      <button id="newProfileBtn" class="btn btn-ghost" title="Create a new profile">+ New</button>
+      <select id="applicationSelect"></select>
+      <button id="newApplicationBtn" class="btn btn-ghost" title="Create a new application">+ New</button>
     </div>
     <p class="hint" id="answerCount">0 saved answers</p>
+    <button id="editProfileBtn" class="btn btn-ghost" title="Edit the shared Profile answers reused across every application">Edit shared Profile</button>
   </section>
 
   <section class="card">
@@ -51,7 +52,7 @@
     <div class="row toggle-row">
       <div>
         <strong>Autofill</strong>
-        <p class="hint">Automatically fill matching fields using the active profile.</p>
+        <p class="hint">Automatically fill matching fields using the active application (and your shared Profile).</p>
       </div>
       <label class="switch">
         <input type="checkbox" id="autofillToggle" />

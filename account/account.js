@@ -49,20 +49,20 @@
 
   /**
    * Build a human-readable description of the user's current plan.
-   * Handles both unlimited plans ("unlimited profiles and answers")
-   * and finite-cap plans ("up to N profiles and M answers").
+   * Handles both unlimited plans ("unlimited applications and answers")
+   * and finite-cap plans ("up to N applications and M answers").
    */
   function planDetailText(account, plan) {
     if (FFAccount.isPaidActive(account)) {
       const until = new Date(account.planExpiresAt).toLocaleDateString();
-      return `Pro plan active until ${until}. Unlimited profiles and answers, ${plan.aiDailyLimit} AutoForm AI suggestions/day.`;
+      return `Pro plan active until ${until}. Unlimited applications and answers, ${plan.aiDailyLimit} AutoForm AI suggestions/day.`;
     }
     const aiSuffix = plan.aiDailyLimit > 0 ? `, ${plan.aiDailyLimit} AutoForm AI suggestions/day` : "";
-    if (!Number.isFinite(plan.maxProfiles)) {
-      return `${plan.label} plan: unlimited profiles and answers${aiSuffix}.`;
+    if (!Number.isFinite(plan.maxApplications)) {
+      return `${plan.label} plan: unlimited applications and answers${aiSuffix}.`;
     }
-    const p = plan.maxProfiles;
-    return `${plan.label} plan: up to ${p === 1 ? "1 profile" : p + " profiles"} and ${plan.maxAnswers} answers${aiSuffix}.`;
+    const p = plan.maxApplications;
+    return `${plan.label} plan: up to ${p === 1 ? "1 application" : p + " applications"} and ${plan.maxAnswers} answers${aiSuffix}.`;
   }
 
   /* ── UI rendering ── */
