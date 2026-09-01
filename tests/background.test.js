@@ -472,6 +472,50 @@ describe("applyMigrations", () => {
   });
 });
 
+describe("getState() end-to-end migration on real legacy storage (regression: data loss on update)", () => {
+  // Unlike the applyMigrations() tests above (which call it directly on a
+  // bare object), these seed chrome.storage.local the way a real pre-update
+  // install would have it, then go through getState() itself — this is the
+  // path that had the actual bug: getState() used to merge stored data onto
+  // defaultState() BEFORE running migrations, and since defaultState()
+  // already provides `applications: {}` (truthy), applyMigrations()'s
+  // `!state.applications` check could never fire, so old `profiles` data
+  // was silently never renamed/surfaced — it looked like it had vanished.
+  test("an Application saved under the old `profiles` key survives a getState() call after \"updating\"", async () => {
+    await chrome.storage.local.set({
+      formauto: {
+        profiles: { "old-1": { id: "old-1", name: "Software Engineer", answers: { email: { value: "a@b.com" } } } },
+        activeProfileId: "old-1",
+        connections: []
+      }
+    });
+
+    const state = await background.getState();
+
+    expect(state.applications["old-1"]).toBeDefined();
+    expect(state.applications["old-1"].name).toBe("Software Engineer");
+    expect(state.applications["old-1"].answers.email.value).toBe("a@b.com");
+    expect(state.activeApplicationId).toBe("old-1");
+    expect(state.profiles).toBeUndefined();
+
+    // And it's the message-handler path (what the UI actually calls) that a
+    // user would notice as "my applications are gone" if this regressed.
+    const listed = await background.handleMessage({ type: "listApplications" });
+    expect(listed.applications).toEqual([{ id: "old-1", name: "Software Engineer", answerCount: 1 }]);
+  });
+
+  test("the migrated shape is persisted back to storage, not just returned in-memory", async () => {
+    await chrome.storage.local.set({
+      formauto: { profiles: { "old-2": { id: "old-2", name: "Test", answers: {} } }, activeProfileId: "old-2" }
+    });
+    await background.getState();
+
+    const raw = await chrome.storage.local.get("formauto");
+    expect(raw.formauto.applications["old-2"]).toBeDefined();
+    expect(raw.formauto.profiles).toBeUndefined();
+  });
+});
+
 describe("mergeConnection", () => {
   test("encrypts a newly provided apiKey and never stores it in plaintext", async () => {
     const base = background.defaultConnection();
