@@ -1465,6 +1465,21 @@ async function setDataStorage(preference) {
   return account;
 }
 
+/**
+ * Redeem a coupon code for the signed-in account. On success, merges the
+ * returned tier/planExpiresAt straight into the locally stored account
+ * object (same read-modify-write shape setDataStorage uses above) so the
+ * UI can render the unlocked plan immediately, without a second round-trip.
+ */
+async function redeemCoupon(code) {
+  const account = await getAccount();
+  if (!account.signedIn) throw new Error("Sign in first.");
+  const result = await callCloudFunction("redeemCoupon", { code });
+  const updated = Object.assign({}, account, { tier: result.tier, planExpiresAt: result.planExpiresAt });
+  await chrome.storage.local.set({ [ACCOUNT_KEY]: updated });
+  return updated;
+}
+
 /* ── Message router ── */
 
 /**
@@ -1640,6 +1655,9 @@ async function handleMessage(msg) {
 
     case "setDataStorage":
       return setDataStorage(msg.preference);
+
+    case "redeemCoupon":
+      return redeemCoupon(msg.code);
 
     case "signOutAccount": {
       await chrome.storage.local.remove(ACCOUNT_KEY);
