@@ -25,6 +25,30 @@ async function withFinitePlan(maxAnswers, fn) {
   }
 }
 
+/** Set the stored account (getAccount()'s source) to a paid + cloud-sync account by default. */
+async function setAccount(overrides) {
+  await chrome.storage.local.set({
+    formautoAccount: Object.assign(
+      { mode: "cloud", signedIn: true, tier: "paid", planExpiresAt: Date.now() + 1000000, dataStorage: "cloud" },
+      overrides
+    )
+  });
+}
+
+async function clearAccount() {
+  await chrome.storage.local.remove("formautoAccount");
+}
+
+/** Mock global.fetch as an LLM that flags EVERY candidate id it was asked about (isolates runAutoPromote's own same-value/conflict filtering from the LLM's judgment). */
+function mockLLMFlagAllCandidates() {
+  return jest.fn(async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    const userMsg = body.messages.find((m) => m.role === "user").content;
+    const ids = Array.from(userMsg.matchAll(/^(\d+):/gm)).map((m) => Number(m[1]));
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(ids) } }] }) };
+  });
+}
+
 describe("saveApplicationAnswers plan-limit enforcement", () => {
   test("throws once a finite plan's answer cap would be exceeded", async () => {
     await withFinitePlan(2, async () => {
@@ -143,6 +167,220 @@ describe("getEffectiveApplication (Profile + Application merge)", () => {
     await background.persistState(background.defaultState());
     const state = await background.getState();
     expect(background.getEffectiveApplication(state, "nope")).toBeNull();
+  });
+});
+
+describe("moveAnswerToProfile", () => {
+  test("moves a saved answer from an Application into the shared Profile", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("move-1");
+    await background.saveApplicationAnswers("move-1", [{ key: "phone", value: "555-1234", question: "Phone" }]);
+
+    await background.moveAnswerToProfile("move-1", "phone");
+
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.phone.value).toBe("555-1234");
+    const application = await background.handleMessage({ type: "getApplication", applicationId: "move-1" });
+    expect(application.answers.phone).toBeUndefined();
+  });
+
+  test("overwrites whatever's already at that key in Profile (explicit user action)", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("move-2");
+    await background.saveProfileAnswers([{ key: "email", value: "old@example.com" }]);
+    await background.saveApplicationAnswers("move-2", [{ key: "email", value: "new@example.com" }]);
+
+    await background.moveAnswerToProfile("move-2", "email");
+
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.email.value).toBe("new@example.com");
+  });
+
+  test("throws for an unknown application", async () => {
+    await expect(background.moveAnswerToProfile("does-not-exist", "phone")).rejects.toThrow("Application not found");
+  });
+
+  test("throws for an unknown answer key", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("move-3");
+    await expect(background.moveAnswerToProfile("move-3", "nope")).rejects.toThrow("Answer not found");
+  });
+});
+
+describe("answersSinceLastRun counting (weekly AI sweep trigger)", () => {
+  test("a genuinely new key increments the counter", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("count-1");
+    await background.saveApplicationAnswers("count-1", [
+      { key: "a", value: "1" },
+      { key: "b", value: "2" }
+    ]);
+    const state = await background.getState();
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(2);
+  });
+
+  test("updating an existing key does not increment the counter", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("count-2");
+    await background.saveApplicationAnswers("count-2", [{ key: "a", value: "1" }]);
+    await background.saveApplicationAnswers("count-2", [{ key: "a", value: "1-updated" }]);
+    const state = await background.getState();
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(1);
+  });
+
+  test("saving to the shared Profile does not increment the counter", async () => {
+    await background.persistState(background.defaultState());
+    await background.saveProfileAnswers([{ key: "c", value: "3" }]);
+    const state = await background.getState();
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(0);
+  });
+});
+
+describe("runAutoPromote (weekly AI sweep)", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  test("promotes a key to Profile and removes it from every Application, when all agree on the same value", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-a");
+    await seedApplication("sweep-b");
+    await background.saveApplicationAnswers("sweep-a", [{ key: "email", value: "shared@example.com", question: "Email" }]);
+    await background.saveApplicationAnswers("sweep-b", [{ key: "email", value: "shared@example.com", question: "Email" }]);
+    await background.handleMessage({ type: "createConnection", provider: "OpenAI", name: "OpenAI", apiKey: "sk-test" });
+    global.fetch = mockLLMFlagAllCandidates();
+
+    const state = await background.getState();
+    const result = await background.runAutoPromote(state);
+
+    expect(result.promoted).toBe(1);
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.email.value).toBe("shared@example.com");
+    const appA = await background.handleMessage({ type: "getApplication", applicationId: "sweep-a" });
+    const appB = await background.handleMessage({ type: "getApplication", applicationId: "sweep-b" });
+    expect(appA.answers.email).toBeUndefined();
+    expect(appB.answers.email).toBeUndefined();
+  });
+
+  test("leaves a key in place on every Application when they disagree on its value, even if the LLM flags it", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-c");
+    await seedApplication("sweep-d");
+    await background.saveApplicationAnswers("sweep-c", [{ key: "email", value: "one@example.com", question: "Email" }]);
+    await background.saveApplicationAnswers("sweep-d", [{ key: "email", value: "two@example.com", question: "Email" }]);
+    await background.handleMessage({ type: "createConnection", provider: "OpenAI", name: "OpenAI", apiKey: "sk-test" });
+    global.fetch = mockLLMFlagAllCandidates();
+
+    const state = await background.getState();
+    const result = await background.runAutoPromote(state);
+
+    expect(result.promoted).toBe(0);
+    const profile = await background.handleMessage({ type: "getUserProfile" });
+    expect(profile.answers.email).toBeUndefined();
+    const appC = await background.handleMessage({ type: "getApplication", applicationId: "sweep-c" });
+    const appD = await background.handleMessage({ type: "getApplication", applicationId: "sweep-d" });
+    expect(appC.answers.email.value).toBe("one@example.com");
+    expect(appD.answers.email.value).toBe("two@example.com");
+  });
+
+  test("resets the counter and stamps lastRunAt after a run", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-e");
+    await background.saveApplicationAnswers("sweep-e", [{ key: "email", value: "a@example.com" }]);
+    await background.handleMessage({ type: "createConnection", provider: "OpenAI", name: "OpenAI", apiKey: "sk-test" });
+    global.fetch = mockLLMFlagAllCandidates();
+
+    const before = Date.now();
+    await background.runAutoPromote(await background.getState());
+    const state = await background.getState();
+
+    expect(state.profileAutoPromote.answersSinceLastRun).toBe(0);
+    expect(state.profileAutoPromote.lastRunAt).toBeGreaterThanOrEqual(before);
+  });
+
+  test("with no candidates, resets bookkeeping without calling the LLM", async () => {
+    await background.persistState(background.defaultState());
+    global.fetch = jest.fn();
+
+    const result = await background.runAutoPromote(await background.getState());
+
+    expect(result.promoted).toBe(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+    const state = await background.getState();
+    expect(state.profileAutoPromote.lastRunAt).not.toBeNull();
+  });
+
+  test("with no LLM connection configured, throws and does not reset bookkeeping", async () => {
+    await background.persistState(background.defaultState());
+    await seedApplication("sweep-f");
+    await background.saveApplicationAnswers("sweep-f", [{ key: "email", value: "a@example.com" }]);
+
+    const stateBefore = await background.getState();
+    await expect(background.runAutoPromote(stateBefore)).rejects.toThrow();
+
+    const state = await background.getState();
+    expect(state.profileAutoPromote.lastRunAt).toBeNull();
+  });
+});
+
+describe("isEligibleForAutoPromote / eligibility gate (paid + cloud-sync accounts only)", () => {
+  afterEach(async () => {
+    await clearAccount();
+  });
+
+  test("a free-tier account is ineligible", () => {
+    expect(background.isEligibleForAutoPromote({ signedIn: true, tier: "free", dataStorage: "cloud" })).toBe(false);
+  });
+
+  test("a paid account that hasn't opted into cloud sync is ineligible", () => {
+    expect(
+      background.isEligibleForAutoPromote({
+        signedIn: true,
+        tier: "paid",
+        planExpiresAt: Date.now() + 100000,
+        dataStorage: "local"
+      })
+    ).toBe(false);
+  });
+
+  test("a paid account with cloud sync enabled is eligible", () => {
+    expect(
+      background.isEligibleForAutoPromote({
+        signedIn: true,
+        tier: "paid",
+        planExpiresAt: Date.now() + 100000,
+        dataStorage: "cloud"
+      })
+    ).toBe(true);
+  });
+
+  test("runAutoPromoteCheck no-ops for an ineligible account even with a large backlog", async () => {
+    const state = background.defaultState();
+    state.autoPromoteToProfile = true;
+    state.profileAutoPromote = { lastRunAt: null, answersSinceLastRun: 15 };
+    await background.persistState(state);
+    await setAccount({ tier: "free" });
+    global.fetch = jest.fn();
+
+    await background.runAutoPromoteCheck();
+
+    const after = await background.getState();
+    expect(after.profileAutoPromote.answersSinceLastRun).toBe(15);
+    expect(after.profileAutoPromote.lastRunAt).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("runAutoPromoteNow throws for an ineligible account without mutating state", async () => {
+    await background.persistState(background.defaultState());
+    await setAccount({ dataStorage: "local" });
+
+    await expect(background.handleMessage({ type: "runAutoPromoteNow" })).rejects.toThrow(
+      /Pro plan and cloud sync/
+    );
+
+    const state = await background.getState();
+    expect(state.profileAutoPromote.lastRunAt).toBeNull();
   });
 });
 

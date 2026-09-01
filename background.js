@@ -60,6 +60,22 @@ function accountAvailable() {
   return globalThis.FIREBASE_CONFIG_AVAILABLE === true;
 }
 
+/**
+ * True only for a paid account that has also opted into cloud sync
+ * ("Save to the cloud" in Account — see account.dataStorage). The automatic
+ * weekly AI sweep (see runAutoPromote below) calls the LLM on the user's
+ * behalf on a recurring schedule with no explicit per-run action, unlike
+ * every other AI call in this extension — so unlike those, it's gated to
+ * this narrower audience rather than available to every signed-in user.
+ * The one-off manual "Move to Profile" button is NOT gated by this — it
+ * never calls the LLM, it's a plain local data move.
+ */
+function isEligibleForAutoPromote(account) {
+  if (!account) return false;
+  if (typeof FFAccount === "undefined" || !FFAccount.isPaidActive) return false;
+  return FFAccount.isPaidActive(account) && account.dataStorage === "cloud";
+}
+
 /* ── Provider / connection helpers ── */
 
 const PROVIDER_PRESETS =
@@ -128,7 +144,9 @@ function defaultState() {
     formDetectionMode: "manual", // "manual" (confirm before saving) or "auto" (save immediately)
     connections: [],           // Array of LLM connection objects
     activeConnectionId: null,  // Currently selected LLM connection
-    suggestMaxRetries: 3       // "Suggest with AI" retries on a malformed LLM response
+    suggestMaxRetries: 3,      // "Suggest with AI" retries on a malformed LLM response
+    autoPromoteToProfile: true, // Whether the weekly AI sweep (see runAutoPromote) is on
+    profileAutoPromote: { lastRunAt: null, answersSinceLastRun: 0 } // Bookkeeping for that sweep
   };
 }
 
@@ -425,9 +443,17 @@ async function saveApplicationAnswers(applicationId, pairs) {
   if (!application) throw new Error("Application not found");
   const account = await getAccount();
   const plan = planFor(account);
+  const keysBefore = new Set(Object.keys(application.answers));
   const changed = await applyAnswerChanges(application, pairs, plan);
   if (changed) {
     application.updatedAt = Date.now();
+    // Count genuinely NEW keys (not updates, not deletions) toward the
+    // weekly AI sweep's trigger threshold — see runAutoPromote().
+    const newKeyCount = Object.keys(application.answers).filter((k) => !keysBefore.has(k)).length;
+    if (newKeyCount > 0) {
+      state.profileAutoPromote = state.profileAutoPromote || { lastRunAt: null, answersSinceLastRun: 0 };
+      state.profileAutoPromote.answersSinceLastRun = (state.profileAutoPromote.answersSinceLastRun || 0) + newKeyCount;
+    }
     await setState(state);
   }
   return { saved: changed };
@@ -462,6 +488,27 @@ async function deleteProfileAnswer(key) {
   const state = await getState();
   delete state.profile.answers[normalizeKey(key)];
   state.profile.updatedAt = Date.now();
+  await setState(state);
+  return { ok: true };
+}
+
+/**
+ * Move a single saved answer from one Application into the shared Profile
+ * (explicit user action via the "Move to Profile" button — always
+ * overwrites whatever's already at that key in Profile, unlike the
+ * automatic sweep below which never overwrites a conflicting value).
+ */
+async function moveAnswerToProfile(applicationId, key) {
+  const state = await getState();
+  const application = state.applications[applicationId];
+  if (!application) throw new Error("Application not found");
+  const normalized = normalizeKey(key);
+  const answer = application.answers[normalized];
+  if (!answer) throw new Error("Answer not found");
+  state.profile.answers[normalized] = answer;
+  state.profile.updatedAt = Date.now();
+  delete application.answers[normalized];
+  application.updatedAt = Date.now();
   await setState(state);
   return { ok: true };
 }
@@ -961,6 +1008,164 @@ async function detectFormPage(url, title, fieldLabels) {
   }
 }
 
+/* ── Profile auto-promote (weekly AI sweep) ──
+ * Moves Application-scoped answers that look like general identity info
+ * (name, phone, education, ...) up into the shared Profile so they're
+ * reused across every Application instead of re-saved per Application.
+ * Gated to paid + cloud-sync accounts (see isEligibleForAutoPromote) and to
+ * running at most once a week with at least 10 new Application answers
+ * accumulated since the last run — see runAutoPromoteCheck() and the
+ * chrome.alarms wiring near the bottom of this file.
+ */
+
+const AUTO_PROMOTE_ALARM_NAME = "profileAutoPromote";
+const AUTO_PROMOTE_MIN_NEW_ANSWERS = 10;
+const AUTO_PROMOTE_MAX_CANDIDATES = 100;
+
+/**
+ * Build the list of Application-owned answers that are candidates for
+ * promotion: any key not already present in the shared Profile. The same
+ * key can appear more than once (once per Application that has it) — the
+ * caller groups by key afterward to enforce the same-value-only rule.
+ */
+function collectAutoPromoteCandidates(state) {
+  const candidates = [];
+  for (const application of Object.values(state.applications)) {
+    for (const [key, answer] of Object.entries(application.answers || {})) {
+      if (state.profile.answers[key]) continue;
+      candidates.push({
+        applicationId: application.id,
+        applicationName: application.name,
+        key,
+        question: answer.question || key,
+        value: answer.value,
+        updatedAt: answer.updatedAt || 0
+      });
+    }
+  }
+  candidates.sort((a, b) => b.updatedAt - a.updatedAt);
+  return candidates.slice(0, AUTO_PROMOTE_MAX_CANDIDATES).map((c, i) => ({ id: i, ...c }));
+}
+
+/**
+ * Ask the LLM which candidates represent general personal-identity info
+ * (reusable across any application) vs. application-specific info. Returns
+ * the subset of `candidates` the LLM flagged. Reuses the same
+ * "reply with ONLY a JSON array" + code-fence-stripping parse pattern as
+ * suggestAnswers/matchSavedAnswers above.
+ */
+async function classifyAutoPromoteCandidates(candidates) {
+  const system = [
+    "You help organize a user's saved form answers into two buckets:",
+    "1. General personal identity info that's the same no matter which application/form it's for — e.g. full name, email, phone number, mailing address, date of birth, education history, work authorization status.",
+    "2. Information specific to one particular application/context — e.g. a cover-letter answer, \"why do you want this role\", an application-specific date or reference number.",
+    "Reply with ONLY a JSON array of the ids from bucket 1 (general identity info). Example: [0,2,5]. If none qualify, reply with []."
+  ].join("\n");
+  const user = candidates
+    .map((c) => `${c.id}: [${c.applicationName}] ${c.question} -> ${JSON.stringify(String(c.value))}`)
+    .join("\n");
+
+  const raw = await callLLM([{ role: "system", content: system }, { role: "user", content: user }]);
+  const cleaned = raw.replace(/```json\s*/i, "").replace(/```/g, "").trim();
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+  const ids = new Set(JSON.parse(cleaned.slice(start, end + 1)));
+  return candidates.filter((c) => ids.has(c.id));
+}
+
+/**
+ * Run the sweep: classify candidates, then promote only the keys where
+ * every flagged candidate under that key agrees on the exact same value
+ * (see the correctness rule in the file header / plan — never silently
+ * pick one Application's value over another's). Returns the number of
+ * keys actually promoted. Always updates profileAutoPromote's bookkeeping
+ * on success; the caller is responsible for not resetting it on failure.
+ */
+async function runAutoPromote(state) {
+  const candidates = collectAutoPromoteCandidates(state);
+  if (!candidates.length) {
+    state.profileAutoPromote = { lastRunAt: Date.now(), answersSinceLastRun: 0 };
+    await setState(state);
+    return { promoted: 0 };
+  }
+
+  const flagged = await classifyAutoPromoteCandidates(candidates);
+
+  const byKey = new Map();
+  for (const c of flagged) {
+    if (!byKey.has(c.key)) byKey.set(c.key, []);
+    byKey.get(c.key).push(c);
+  }
+
+  let promoted = 0;
+  for (const [key, entries] of byKey) {
+    if (state.profile.answers[key]) continue; // Raced with another write since candidates were built
+    const values = new Set(entries.map((e) => e.value));
+    if (values.size > 1) continue; // Conflicting values across Applications — leave in place
+    const [first] = entries;
+    const application = state.applications[first.applicationId];
+    const sourceAnswer = application && application.answers[key];
+    if (!sourceAnswer) continue;
+    state.profile.answers[key] = sourceAnswer;
+    for (const e of entries) {
+      const app = state.applications[e.applicationId];
+      if (app) delete app.answers[key];
+    }
+    promoted++;
+  }
+
+  state.profile.updatedAt = Date.now();
+  state.profileAutoPromote = { lastRunAt: Date.now(), answersSinceLastRun: 0 };
+  await setState(state);
+  return { promoted };
+}
+
+/**
+ * Weekly alarm handler: only actually runs the sweep when the account is
+ * eligible, the setting is on, and enough new answers have piled up.
+ * Never throws — this runs unattended off an alarm, not a user click.
+ */
+async function runAutoPromoteCheck() {
+  try {
+    const state = await getState();
+    if (!state.autoPromoteToProfile) return;
+    const answersSinceLastRun = (state.profileAutoPromote && state.profileAutoPromote.answersSinceLastRun) || 0;
+    if (answersSinceLastRun < AUTO_PROMOTE_MIN_NEW_ANSWERS) return;
+    const account = await getAccount();
+    if (!isEligibleForAutoPromote(account)) return;
+    await runAutoPromote(state);
+  } catch (e) {
+    console.warn("[autoForm] Profile auto-promote sweep failed:", (e && e.message) || e);
+  }
+}
+
+/**
+ * Manual "Check now" trigger — still requires eligibility, but bypasses the
+ * weekly/10-answer gate so the feature is testable and discoverable without
+ * waiting a week.
+ */
+async function runAutoPromoteNow() {
+  const account = await getAccount();
+  if (!isEligibleForAutoPromote(account)) {
+    throw new Error("Automatic AI sweep requires the Pro plan and cloud sync.");
+  }
+  const state = await getState();
+  return runAutoPromote(state);
+}
+
+/** Status for the Profile view's settings card. */
+async function getProfileAutoPromoteStatus() {
+  const state = await getState();
+  const account = await getAccount();
+  const bookkeeping = state.profileAutoPromote || { lastRunAt: null, answersSinceLastRun: 0 };
+  return {
+    enabled: !!state.autoPromoteToProfile,
+    eligible: isEligibleForAutoPromote(account),
+    answersSinceLastRun: bookkeeping.answersSinceLastRun || 0,
+    lastRunAt: bookkeeping.lastRunAt || null
+  };
+}
+
 /* ── Connection management ── */
 
 /**
@@ -1393,6 +1598,22 @@ async function handleMessage(msg) {
     case "deleteProfileAnswer":
       return deleteProfileAnswer(msg.key);
 
+    case "moveAnswerToProfile":
+      return moveAnswerToProfile(msg.applicationId, msg.key);
+
+    case "setAutoPromoteToProfile": {
+      const state = await getState();
+      state.autoPromoteToProfile = !!msg.enabled;
+      await setState(state);
+      return { ok: true };
+    }
+
+    case "getProfileAutoPromoteStatus":
+      return getProfileAutoPromoteStatus();
+
+    case "runAutoPromoteNow":
+      return runAutoPromoteNow();
+
     /* ── Answer CRUD ── */
 
     case "saveAnswers":
@@ -1572,6 +1793,24 @@ chrome.runtime.onInstalled.addListener(() => {
       contexts: ["editable"]
     });
   });
+  ensureAutoPromoteAlarm();
+});
+
+/**
+ * Ensure the weekly auto-promote alarm exists, without resetting its
+ * schedule if it's already there — chrome.alarms.create() with an existing
+ * name restarts the countdown, and this listener also fires on every
+ * extension update/dev-reload, not just first install.
+ */
+async function ensureAutoPromoteAlarm() {
+  const existing = await chrome.alarms.get(AUTO_PROMOTE_ALARM_NAME);
+  if (!existing) {
+    chrome.alarms.create(AUTO_PROMOTE_ALARM_NAME, { periodInMinutes: 7 * 24 * 60 });
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === AUTO_PROMOTE_ALARM_NAME) runAutoPromoteCheck();
 });
 
 /**
@@ -1607,7 +1846,13 @@ if (typeof module !== "undefined" && module.exports) {
     deleteApplicationSiteCollection,
     saveProfileAnswers,
     deleteProfileAnswer,
+    moveAnswerToProfile,
     getEffectiveApplication,
+    isEligibleForAutoPromote,
+    runAutoPromote,
+    runAutoPromoteCheck,
+    runAutoPromoteNow,
+    getProfileAutoPromoteStatus,
     applyMigrations,
     mergeConnection,
     defaultConnection,

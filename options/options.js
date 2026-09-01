@@ -27,6 +27,7 @@
     answersApplicationId: null, // Which application's answers are being viewed
     answers: [],
     profileAnswers: [],         // The shared Profile's answers (flat list, no site grouping)
+    autoPromoteStatus: null,    // { enabled, eligible, answersSinceLastRun, lastRunAt } from background
     search: "",                 // Current search filter for answers
     answersView: "all",         // "all" (flat table) or "sites" (grouped cards)
     expandedSites: new Set(),   // Which site cards are expanded in sites view
@@ -462,6 +463,26 @@
     editBtn.className = "btn btn-small";
     editBtn.textContent = "Edit";
 
+    let moveBtn = null;
+    if (scope !== "profile") {
+      moveBtn = document.createElement("button");
+      moveBtn.className = "btn btn-small";
+      moveBtn.textContent = "Move to Profile";
+      moveBtn.title = "Share this answer across every application";
+      moveBtn.addEventListener("click", async () => {
+        const res = await sendMsg({
+          type: "moveAnswerToProfile",
+          applicationId: state.answersApplicationId,
+          key: a.key
+        });
+        if (!res.ok) {
+          alert(res.error);
+          return;
+        }
+        await refresh();
+      });
+    }
+
     const delBtn = document.createElement("button");
     delBtn.className = "btn btn-small btn-danger";
     delBtn.textContent = "Delete";
@@ -530,7 +551,9 @@
       vWrap.append(editRow);
     });
 
-    actions.append(editBtn, delBtn);
+    actions.append(editBtn);
+    if (moveBtn) actions.append(moveBtn);
+    actions.append(delBtn);
     card.append(meta, q, vWrap, toggle, actions);
 
     // Auto-collapse long answers after card is in the DOM
@@ -842,6 +865,58 @@
 
   $("addProfileAnswerBtn").addEventListener("click", () => addAnswerRow("profile"));
 
+  /* ── Profile auto-promote (weekly AI sweep) settings card ── */
+
+  /** Load the weekly-sweep status from background into state.autoPromoteStatus */
+  async function loadAutoPromoteStatus() {
+    const res = await sendMsg({ type: "getProfileAutoPromoteStatus" });
+    state.autoPromoteStatus = res.ok ? res.data : null;
+  }
+
+  /** Render the "Automatically move shared answers" settings card */
+  function renderAutoPromoteCard() {
+    const status = state.autoPromoteStatus;
+    if (!status) return;
+    $("autoPromoteToggle").checked = status.enabled;
+    $("autoPromoteToggle").disabled = !status.eligible;
+    $("autoPromoteCheckBtn").classList.toggle("hidden", !status.eligible);
+    if (!status.eligible) {
+      $("autoPromoteHint").textContent =
+        "Automatic AI sweep requires the Pro plan and cloud sync — manage this in Account.";
+    } else {
+      const last = status.lastRunAt ? fmtTime(status.lastRunAt) : "never";
+      $("autoPromoteHint").textContent =
+        `${status.answersSinceLastRun} new answer${status.answersSinceLastRun === 1 ? "" : "s"} since last check ` +
+        `— runs weekly once 10 or more accumulate. Last check: ${last}.`;
+    }
+  }
+
+  $("autoPromoteToggle").addEventListener("change", async (e) => {
+    const res = await sendMsg({ type: "setAutoPromoteToProfile", enabled: e.target.checked });
+    if (!res.ok) {
+      alert(res.error);
+      e.target.checked = !e.target.checked;
+      return;
+    }
+    await loadAutoPromoteStatus();
+    renderAutoPromoteCard();
+  });
+
+  $("autoPromoteCheckBtn").addEventListener("click", async () => {
+    const btn = $("autoPromoteCheckBtn");
+    btn.disabled = true;
+    setStatus($("autoPromoteStatus"), "Checking…");
+    const res = await sendMsg({ type: "runAutoPromoteNow" });
+    if (!res.ok) {
+      setStatus($("autoPromoteStatus"), res.error, "error");
+    } else {
+      const n = res.data.promoted;
+      setStatus($("autoPromoteStatus"), n > 0 ? `Moved ${n} answer${n === 1 ? "" : "s"}.` : "Nothing to move yet.", "ok");
+    }
+    btn.disabled = false;
+    await refresh();
+  });
+
   /* ── AI Settings view ── */
 
   /** Render the connection selector dropdown */
@@ -1067,6 +1142,8 @@
     renderAiUsage();
     await loadProfileAnswers();
     renderProfileAnswers();
+    await loadAutoPromoteStatus();
+    renderAutoPromoteCard();
     await loadState();
     renderApplications();
     renderAutoDetectToggle();

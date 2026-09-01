@@ -34,6 +34,22 @@
           Shared identity info — name, phone, email, education, and anything else that's the same
           everywhere — kept once here and reused across every Application below.
         </p>
+        <div class="card" style="max-width:100%;margin-bottom:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div>
+              <strong>Automatically move shared answers here using AI</strong>
+              <p id="autoPromoteHint" class="hint" style="margin-bottom:0;"></p>
+            </div>
+            <label class="switch-wrap">
+              <input type="checkbox" id="autoPromoteToggle" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <div style="margin-top:10px;">
+            <button id="autoPromoteCheckBtn" class="btn btn-ghost hidden">Check now</button>
+            <p id="autoPromoteStatus" class="status"></p>
+          </div>
+        </div>
         <div id="profileAnswersList" class="answers-list"></div>
         <div id="profileAnswersEmpty" class="empty hidden">
           No shared answers yet. Add fields like your name, phone, or email so every application can reuse them.
