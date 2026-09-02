@@ -142,9 +142,8 @@ autoform/
 ├── account/
 │   ├── account.html       # Sign-in / account management page
 │   └── account.js         # Account page controller
-├── lib/
-│   ├── firebase-app-compat.js   # Vendored Firebase App SDK
-│   └── firebase-auth-compat.js  # Vendored Firebase Auth SDK
+├── offscreen.html / offscreen.js  # Bridges Google/Apple sign-in to a hosted page
+│                                    # (signInWithPopup can't run in a chrome-extension:// origin)
 ├── scripts/
 │   └── gen-firebase-config.js   # Generates firebase-config.js from .env
 ├── icons/                 # Extension icons
@@ -160,7 +159,15 @@ autoform/
 
 - **Plain JavaScript** — no frameworks, no transpiler, no bundler
 - **Chrome Extensions MV3** — service worker, content scripts, chrome.storage
-- **Firebase Auth** (optional) — Google/Apple sign-in via vendored compat SDK
+- **Firebase Auth** (optional) — Google/Apple sign-in. `signInWithPopup` can't
+  complete its handshake with Google from a `chrome-extension://` origin, so
+  the extension package itself contains no Firebase SDK at all: sign-in runs
+  on a real `https://` page (`landing/authhandler.js`, deployed separately to
+  Firebase Hosting, loading the SDK from `gstatic.com`) opened in a hidden
+  iframe by an offscreen document — see `offscreen.js` and
+  `account/account.js`'s file header for the full flow. This keeps the
+  submitted extension free of any remotely-hosted code, per Chrome Web
+  Store's Manifest V3 requirements.
 - **OpenAI-compatible chat completions API** — works with any provider
 
 ---
