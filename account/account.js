@@ -93,6 +93,8 @@
     $("planDetail").textContent = planDetailText(account, plan);
     $("dataStorageLabel").textContent =
       account.dataStorage === "cloud" ? "Data storage: Synced to the cloud" : "Data storage: On this device";
+    // No reason to prompt an already-Pro account for a code.
+    $("couponRow").classList.toggle("hidden", FFAccount.isPaidActive(account));
   }
 
   function setStatus(text, isError) {
@@ -140,6 +142,28 @@
       render(res.data);
     } catch (err) {
       status.textContent = (err && err.message) || "Failed to save preference.";
+      status.className = "status error";
+    }
+  }
+
+  /* ── Coupon redemption ── */
+
+  async function redeemCoupon() {
+    const input = $("couponInput");
+    const status = $("couponStatus");
+    const code = input.value.trim();
+    if (!code) return;
+    status.className = "status";
+    status.textContent = "Redeeming…";
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "redeemCoupon", code });
+      if (!res || !res.ok) throw new Error((res && res.error) || "Failed to redeem coupon.");
+      input.value = "";
+      render(res.data);
+      const until = new Date(res.data.planExpiresAt).toLocaleDateString();
+      status.textContent = `Pro unlocked until ${until}.`;
+    } catch (err) {
+      status.textContent = (err && err.message) || "Failed to redeem coupon.";
       status.className = "status error";
     }
   }
@@ -223,6 +247,11 @@
     $("dataLocalBtn").addEventListener("click", () => chooseDataStorage("local"));
     $("dataCloudBtn").addEventListener("click", () => chooseDataStorage("cloud"));
     $("dataStorageChangeBtn").addEventListener("click", showDataChoice);
+
+    $("redeemCouponBtn").addEventListener("click", redeemCoupon);
+    $("couponInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") redeemCoupon();
+    });
   }
 
   /* ── Bootstrap ── */
