@@ -232,7 +232,18 @@ async function applyMigrations(state) {
 
 /* ── State accessors ── */
 
-/** Load state from storage, apply migrations, merge with defaults */
+/**
+ * Load state from storage, apply migrations, merge with defaults.
+ *
+ * Migrations run on the RAW stored object, before it's merged with
+ * defaultState() — not after. applyMigrations() detects an old shape by
+ * checking for the ABSENCE of a new-shape key (e.g. `!state.applications`);
+ * defaultState() always provides that key with a default value (e.g.
+ * `applications: {}`, which is truthy), so if defaults were merged in
+ * first, that absence check could never fire and the migration would
+ * silently never run — leaving real data stranded under its old key
+ * (see the profiles→applications rename this was fixed for).
+ */
 async function getState() {
   let data;
   try {
@@ -240,8 +251,10 @@ async function getState() {
   } catch (e) {
     throw new Error(`Failed to load extension data: ${(e && e.message) || e}`);
   }
-  const state = Object.assign(defaultState(), data[STORAGE_KEY] || {});
-  if (await applyMigrations(state)) {
+  const stored = data[STORAGE_KEY] || {};
+  const migrated = await applyMigrations(stored);
+  const state = Object.assign(defaultState(), stored);
+  if (migrated) {
     await persistState(state);
   }
   return state;
@@ -1429,11 +1442,13 @@ async function checkCloudData() {
     await chrome.storage.local.set({ [ACCOUNT_KEY]: account });
     if (result.dataStorage === "cloud" && result.data) {
       // A device that hasn't updated yet may still push the old
-      // `profiles`/`activeProfileId` shape — normalize before merging so
-      // stale keys don't get reintroduced into local state (see
-      // applyMigrations()'s profiles→applications block).
-      const normalized = Object.assign(defaultState(), result.data);
-      await applyMigrations(normalized);
+      // `profiles`/`activeProfileId` shape — migrate BEFORE merging with
+      // defaults (same ordering fix as getState(): defaultState() already
+      // provides `applications`/etc., which would mask applyMigrations()'s
+      // "is this key missing" checks if defaults were applied first).
+      const cloudData = Object.assign({}, result.data);
+      await applyMigrations(cloudData);
+      const normalized = Object.assign(defaultState(), cloudData);
       await setState(normalized);
     }
     return { known: true, dataStorage: result.dataStorage };
